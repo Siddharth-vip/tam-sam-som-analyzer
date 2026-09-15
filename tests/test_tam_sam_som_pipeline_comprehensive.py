@@ -14,7 +14,7 @@ from app.schemas.calculation import (
     BottomUpCalculationInputs,
 )
 from app.schemas.discovery import SourceQualityTier
-from app.schemas.extraction import MarketMetricType
+from app.schemas.extraction import MarketMetricType, ExtractedEvidenceCandidate
 from app.schemas.pipeline import PipelineRequest
 from app.services.calculation_service import CalculationService
 from app.services.extraction_service import EvidenceExtractionService
@@ -624,3 +624,48 @@ def test_scenario_d_residential_solar_india():
     assert report.top_down_sam.status == CalculationStatus.CALCULATED
     assert report.top_down_sam.estimate == 2400000000.0  # 12B * 20% = $2.4B
     assert report.top_down_som.status == CalculationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_malformed_percentage_and_jump_from_do_not_crash_pipeline():
+    """Regression test: Malformed candidate with out-of-bounds percentage or 'jump from' does not crash market calculation."""
+    extractor = EvidenceExtractionService()
+    validator = EvidenceValidationService()
+    pipeline = MarketAnalysisPipeline()
+    calc_service = CalculationService()
+
+    s1 = "The India apparel market is valued at USD 1,200 million in 2025."
+    s2 = "Sustainable apparel represents a target segment accounting for 25.0% of apparel sales in India."
+    s3 = "Consumer demand saw a jump from 128 to 150 million users."
+
+    cands = []
+    for s in (s1, s2, s3):
+        cands.extend(extractor.extract_candidates_from_sentence(s, "https://apparel-market-research.com"))
+
+    # Also deliberately inject a malformed candidate with an invalid percentage
+    malformed_cand = ExtractedEvidenceCandidate(
+        metric="jump from",
+        value=128.0,
+        unit="%",
+        geography="India",
+        year=2025,
+        source_url="https://bad-source.com",
+        source_context="There was a jump from 128% in metrics.",
+    )
+    cands.append(malformed_cand)
+    tri_items = validator.triangulate_evidence(cands).validated_items
+
+    req = PipelineRequest(
+        business_idea="Direct-to-consumer sustainable apparel marketplace for environmentally conscious consumers in India",
+        preferred_geography="India",
+        preferred_year=2025,
+    )
+
+    # Pipeline _build_calculation_inputs should safely filter out/sanitize the malformed item without raising ValidationError
+    calc_input = pipeline._build_calculation_inputs(None, tri_items, req)
+    report = calc_service.generate_report(calc_input)
+
+    assert report.top_down_tam.status == CalculationStatus.CALCULATED
+    assert report.top_down_tam.estimate == 1200000000.0  # $1.2B
+    assert report.top_down_sam.status == CalculationStatus.CALCULATED
+    assert report.top_down_sam.estimate == 300000000.0   # $1.2B * 25% = $300M
+

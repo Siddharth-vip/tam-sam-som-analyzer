@@ -11,6 +11,7 @@ from app.schemas.extraction import (
     ExtractionRequest,
     ExtractionResponse,
     ExtractionStatus,
+    MarketMetricType,
 )
 from app.services.extraction_service import EvidenceExtractionService
 
@@ -177,4 +178,95 @@ def test_extraction_rejects_listicles_and_non_market_noise() -> None:
     assert resp.status == ExtractionStatus.NO_METRICS_FOUND
     assert len(resp.candidates) == 0
     assert resp.total_candidates_found == 0
+
+
+def test_regression_requirement_12_semantic_metric_distinction_and_jump_from():
+    """Regression tests for requirement 12 A-G:
+    A. 'jump from 128 million to 150 million'
+    B. 'increased from 128 to 150 million users'
+    C. 'market grew 12.8%'
+    D. 'CAGR of 12.8%'
+    E. 'market share of 28%'
+    F. '$128 million market size'
+    G. Source containing multiple metrics where one malformed metric exists.
+    """
+    # A. "jump from 128 million to 150 million"
+    s_a = "The transaction volume witnessed a jump from 128 million to 150 million in 2025."
+    cands_a = extractor.extract_candidates_from_sentence(s_a, "https://report.com/a")
+    assert len(cands_a) >= 1
+    assert cands_a[0].is_range_or_approximate is True
+    assert cands_a[0].range_min == 128_000_000.0
+    assert cands_a[0].range_max == 150_000_000.0
+    assert cands_a[0].unit != "%"
+    assert cands_a[0].value != 128.0
+
+    # B. "increased from 128 to 150 million users"
+    s_b = "The mobile application increased from 128 to 150 million users across India."
+    cands_b = extractor.extract_candidates_from_sentence(s_b, "https://report.com/b")
+    assert len(cands_b) >= 1
+    assert cands_b[0].is_range_or_approximate is True
+    assert cands_b[0].range_min == 128_000_000.0
+    assert cands_b[0].range_max == 150_000_000.0
+    assert cands_b[0].unit == "users"
+    assert cands_b[0].value != 128.0
+
+    # C. "market grew 12.8%"
+    s_c = "The sustainable fashion market grew 12.8% year over year."
+    cands_c = extractor.extract_candidates_from_sentence(s_c, "https://report.com/c")
+    assert len(cands_c) >= 1
+    assert cands_c[0].value == 12.8
+    assert cands_c[0].unit == "%"
+    assert cands_c[0].metric_type == MarketMetricType.GROWTH_RATE
+
+    # D. "CAGR of 12.8%"
+    s_d = "The industry is projected to expand at a CAGR of 12.8% through 2030."
+    cands_d = extractor.extract_candidates_from_sentence(s_d, "https://report.com/d")
+    assert len(cands_d) >= 1
+    assert cands_d[0].value == 12.8
+    assert cands_d[0].unit == "%"
+    assert cands_d[0].metric_type in (MarketMetricType.GROWTH_RATE, MarketMetricType.CAGR)
+
+    # E. "market share of 28%"
+    s_e = "The top marketplace commands a market share of 28% in urban regions."
+    cands_e = extractor.extract_candidates_from_sentence(s_e, "https://report.com/e")
+    assert len(cands_e) >= 1
+    assert cands_e[0].value == 28.0
+    assert cands_e[0].unit == "%"
+    assert cands_e[0].metric_type == MarketMetricType.MARKET_SHARE
+
+    # F. "$128 million market size"
+    s_f = "The sustainable apparel sector reached a $128 million market size in India in 2025."
+    cands_f = extractor.extract_candidates_from_sentence(s_f, "https://report.com/f")
+    assert len(cands_f) >= 1
+    market_cands = [c for c in cands_f if c.unit == "USD"]
+    assert len(market_cands) >= 1
+    assert market_cands[0].value == 128_000_000.0
+    assert market_cands[0].geography == "India"
+    assert market_cands[0].year == 2025
+
+    # G. Source containing multiple metrics where one malformed metric exists.
+    # The malformed candidate must NOT crash candidate extraction or triangulation.
+    content_g = """
+    The sustainable apparel market size in India was USD 128 million in 2025.
+    Customer adoption saw a jump from 128 to 150 million users across the country.
+    E-commerce penetration is at 28% of total apparel sales.
+    The sector grew 12.8% year on year.
+    """
+    source_g = FetchedSource(
+        original_url="https://apparel-insights.com/report",
+        title="India Sustainable Apparel Report 2025",
+        content=content_g,
+        fetch_status=FetchStatus.SUCCESS,
+    )
+    resp_g = extractor.extract_evidence_from_source(ExtractionRequest(source=source_g))
+    assert resp_g.status == ExtractionStatus.SUCCESS
+    assert resp_g.total_candidates_found >= 3
+    # Ensure all extracted candidates have valid units and reasonable values
+    for cand in resp_g.candidates:
+        if cand.unit == "%":
+            assert cand.value is not None and 0.0 <= cand.value <= 100.0
+        elif cand.is_range_or_approximate:
+            assert cand.range_min is not None and cand.range_max is not None
+            assert cand.range_min <= cand.range_max
+
 

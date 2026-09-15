@@ -590,8 +590,8 @@ class OrchestrationService:
         request: OrchestrationRequest,
     ) -> CalculationInput:
         """Map validated evidence and explicit user assumptions into calculation operands (Evidence Gate)."""
-        target_geo = request.geography or (analysis.geography if analysis else None)
-        target_yr = request.year or 2025
+        target_geo = getattr(request, "preferred_geography", None) or getattr(request, "geography", None) or (analysis.geography if analysis else None)
+        target_yr = getattr(request, "preferred_year", None) or getattr(request, "year", None) or 2025
 
         assumptions_map = {a.name.lower(): a for a in request.explicit_assumptions}
 
@@ -616,6 +616,13 @@ class OrchestrationService:
             if u in ("GBP", "£", "POUND", "POUNDS"):
                 return "GBP"
             return None
+
+        def _safe_create_evidence_input(**kwargs) -> Optional[EvidenceInput]:
+            try:
+                return EvidenceInput(**kwargs)
+            except Exception as exc:
+                logger.warning("Rejected invalid evidence input '%s': %s", kwargs.get("name"), exc)
+                return None
 
         # Ranked candidate pools for deterministic evidence-based operand selection
         macro_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
@@ -723,7 +730,7 @@ class OrchestrationService:
 
             if is_count_metric:
                 is_serviceable_subset = any(k in metric_name_lower for k in ("serviceable", "target", "tier-1", "tier 1", "urban", "major cities", "qualified", "accessible"))
-                count_ev_input = EvidenceInput(
+                count_ev_input = _safe_create_evidence_input(
                     name=item.metric,
                     value=eff_val,
                     unit=item.unit or "units",
@@ -745,13 +752,14 @@ class OrchestrationService:
                     range_min=c_min,
                     range_max=c_max,
                 )
-                geo_score = 50.0 if (tgt_geo_norm and cand_geo_norm == tgt_geo_norm) else (30.0 if (tgt_geo_norm and tgt_geo_norm in cand_geo_norm) else 10.0)
-                tot_score = geo_score + yr_score + source_tier_score + corrob_score + stage_score
+                if count_ev_input is not None:
+                    geo_score = 50.0 if (tgt_geo_norm and cand_geo_norm == tgt_geo_norm) else (30.0 if (tgt_geo_norm and tgt_geo_norm in cand_geo_norm) else 10.0)
+                    tot_score = geo_score + yr_score + source_tier_score + corrob_score + stage_score
 
-                if is_serviceable_subset:
-                    serviceable_population_candidates.append((tot_score, float(cand_year), item.candidate_id, count_ev_input))
-                else:
-                    population_candidates.append((tot_score, float(cand_year), item.candidate_id, count_ev_input))
+                    if is_serviceable_subset:
+                        serviceable_population_candidates.append((tot_score, float(cand_year), item.candidate_id, count_ev_input))
+                    else:
+                        population_candidates.append((tot_score, float(cand_year), item.candidate_id, count_ev_input))
 
             elif unit_norm in ("%", "pct", "percent", "percentage"):
                 # 0. Sanitize and validate percentage bounds (0-100%)
@@ -854,7 +862,7 @@ class OrchestrationService:
                 if pct_min is not None and pct_max is not None and pct_min > pct_max:
                     pct_min, pct_max = min(pct_min, pct_max), max(pct_min, pct_max)
 
-                pct_ev_input = EvidenceInput(
+                pct_ev_input = _safe_create_evidence_input(
                     name=item.metric,
                     value=eff_val,
                     unit="%",
@@ -872,85 +880,86 @@ class OrchestrationService:
                     range_max=pct_max,
                 )
 
-                # Geographic share percentage (e.g. "India represents 5.41% of the global market")
-                GLOBAL_OR_REGIONAL_SHARE_TERMS = (
-                    "global market share", "global share", "of the global market", "of global market",
-                    "of the global", "of global", "share of the global", "share of global",
-                    "global market revenues", "regional market share", "the region exhibited",
-                    "regional share", "state share", "city share", "metro share", "geographic share",
-                    "geography"
-                )
-                is_global_or_regional_share = (
-                    any(t in metric_name_lower or t in context_lower for t in GLOBAL_OR_REGIONAL_SHARE_TERMS)
-                )
-                is_explicit_geo_share = (
-                    is_global_or_regional_share
-                    and (
-                        (tgt_geo_norm and tgt_geo_norm in full_context_text)
-                        or (item.geography and tgt_geo_norm and tgt_geo_norm in item.geography.lower())
+                if pct_ev_input is not None:
+                    # Geographic share percentage (e.g. "India represents 5.41% of the global market")
+                    GLOBAL_OR_REGIONAL_SHARE_TERMS = (
+                        "global market share", "global share", "of the global market", "of global market",
+                        "of the global", "of global", "share of the global", "share of global",
+                        "global market revenues", "regional market share", "the region exhibited",
+                        "regional share", "state share", "city share", "metro share", "geographic share",
+                        "geography"
                     )
-                )
-                is_geo_pct = is_explicit_geo_share
-
-                # Obtainable market capture percentage (SOM)
-                is_som_share = (
-                    any(k in metric_name_lower for k in ("som", "obtainable", "capture"))
-                    or any(k in context_lower for k in ("obtainable market share", "target market share", "our market share", "platform penetration target", "market capture of", "obtainable share", "realistic market capture", "year 1 capture", "year 3 capture"))
-                )
-
-                # Target customer / serviceable segment narrowing factor
-                metric_clean = metric_name_lower.replace("market share / segment percentage", "").strip()
-                target_cust_str = (analysis.target_customer or "").lower().strip() if analysis else ""
-                target_cust_words = [w for w in re.findall(r"\w+", target_cust_str) if len(w) > 3]
-
-                has_segment_intent = (
-                    not is_global_or_regional_share
-                    and (
-                        metric_type_val in ("customer_segment", "target_segment", "serviceable_share")
-                        or (target_cust_str and (target_cust_str in metric_clean or target_cust_str in context_lower))
-                        or (target_cust_words and any(w in metric_clean for w in target_cust_words))
-                        or (target_cust_words and any(w in context_lower and any(v in context_lower for v in ("represent", "account", "share", "portion", "orders", "demand", "volume", "users", "customers", "market", "segment")) for w in target_cust_words))
-                        or (metric_clean and any(k in metric_clean for k in (
-                            "target segment", "serviceable segment", "customer qualification", "addressable segment",
-                            "target audience", "serviceable percentage", "target customer", "serviceable customer",
-                            "target demographic", "customer segment", "service segment", "segment share", "segment",
-                            "service transactions", "online orders", "penetration rate", "adoption rate", "market share"
-                        )))
-                        or any(k in context_lower for k in (
-                            "serviceable customer", "target customer segment", "qualification rate", "serviceable addressable",
-                            "target segment", "serviceable segment", "accounts for", "account for", "represents", "represent",
-                            "service transactions in", "orders across", "demand across", "adoption rate", "penetration rate", "market share of"
-                        ))
+                    is_global_or_regional_share = (
+                        any(t in metric_name_lower or t in context_lower for t in GLOBAL_OR_REGIONAL_SHARE_TERMS)
                     )
-                )
-                has_business_topic_alignment = (
-                    not analysis
-                    or any(kw in full_context_text for kw in biz_keywords)
-                    or (ind_text and ind_text in full_context_text)
-                    or (prod_text and any(pw in full_context_text for pw in prod_text.split() if len(pw) > 3))
-                )
-                is_target_segment = has_segment_intent and has_business_topic_alignment and not is_geo_pct and not is_som_share
-
-                if is_geo_pct:
-                    cand_geo_match = (
-                        not item.geography
-                        or not target_geo
-                        or item.geography.lower() == target_geo.lower()
-                        or (target_geo.lower() in (item.source_context or "").lower())
+                    is_explicit_geo_share = (
+                        is_global_or_regional_share
+                        and (
+                            (tgt_geo_norm and tgt_geo_norm in full_context_text)
+                            or (item.geography and tgt_geo_norm and tgt_geo_norm in item.geography.lower())
+                        )
                     )
-                    if cand_geo_match:
-                        geo_score = 100.0 if (target_geo and target_geo.lower() in full_context_text) else 60.0
-                        tot_score = geo_score + yr_score + source_tier_score + corrob_score + stage_score
-                        geo_pct_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+                    is_geo_pct = is_explicit_geo_share
 
-                elif is_som_share:
-                    tot_score = 80.0 + yr_score + source_tier_score + corrob_score + stage_score
-                    som_share_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+                    # Obtainable market capture percentage (SOM)
+                    is_som_share = (
+                        any(k in metric_name_lower for k in ("som", "obtainable", "capture"))
+                        or any(k in context_lower for k in ("obtainable market share", "target market share", "our market share", "platform penetration target", "market capture of", "obtainable share", "realistic market capture", "year 1 capture", "year 3 capture"))
+                    )
 
-                elif is_target_segment:
-                    relevance_match = 50.0 if any(w in full_context_text for w in biz_keywords) else 30.0
-                    tot_score = relevance_match + yr_score + source_tier_score + corrob_score + stage_score
-                    target_pct_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+                    # Target customer / serviceable segment narrowing factor
+                    metric_clean = metric_name_lower.replace("market share / segment percentage", "").strip()
+                    target_cust_str = (analysis.target_customer or "").lower().strip() if analysis else ""
+                    target_cust_words = [w for w in re.findall(r"\w+", target_cust_str) if len(w) > 3]
+
+                    has_segment_intent = (
+                        not is_global_or_regional_share
+                        and (
+                            metric_type_val in ("customer_segment", "target_segment", "serviceable_share")
+                            or (target_cust_str and (target_cust_str in metric_clean or target_cust_str in context_lower))
+                            or (target_cust_words and any(w in metric_clean for w in target_cust_words))
+                            or (target_cust_words and any(w in context_lower and any(v in context_lower for v in ("represent", "account", "share", "portion", "orders", "demand", "volume", "users", "customers", "market", "segment")) for w in target_cust_words))
+                            or (metric_clean and any(k in metric_clean for k in (
+                                "target segment", "serviceable segment", "customer qualification", "addressable segment",
+                                "target audience", "serviceable percentage", "target customer", "serviceable customer",
+                                "target demographic", "customer segment", "service segment", "segment share", "segment",
+                                "service transactions", "online orders", "penetration rate", "adoption rate", "market share"
+                            )))
+                            or any(k in context_lower for k in (
+                                "serviceable customer", "target customer segment", "qualification rate", "serviceable addressable",
+                                "target segment", "serviceable segment", "accounts for", "account for", "represents", "represent",
+                                "service transactions in", "orders across", "demand across", "adoption rate", "penetration rate", "market share of"
+                            ))
+                        )
+                    )
+                    has_business_topic_alignment = (
+                        not analysis
+                        or any(kw in full_context_text for kw in biz_keywords)
+                        or (ind_text and ind_text in full_context_text)
+                        or (prod_text and any(pw in full_context_text for pw in prod_text.split() if len(pw) > 3))
+                    )
+                    is_target_segment = has_segment_intent and has_business_topic_alignment and not is_geo_pct and not is_som_share
+
+                    if is_geo_pct:
+                        cand_geo_match = (
+                            not item.geography
+                            or not target_geo
+                            or item.geography.lower() == target_geo.lower()
+                            or (target_geo.lower() in (item.source_context or "").lower())
+                        )
+                        if cand_geo_match:
+                            geo_score = 100.0 if (target_geo and target_geo.lower() in full_context_text) else 60.0
+                            tot_score = geo_score + yr_score + source_tier_score + corrob_score + stage_score
+                            geo_pct_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+
+                    elif is_som_share:
+                        tot_score = 80.0 + yr_score + source_tier_score + corrob_score + stage_score
+                        som_share_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+
+                    elif is_target_segment:
+                        relevance_match = 50.0 if any(w in full_context_text for w in biz_keywords) else 30.0
+                        tot_score = relevance_match + yr_score + source_tier_score + corrob_score + stage_score
+                        target_pct_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
 
             elif resolved_currency is not None or unit_norm in ("usd", "inr", "eur", "gbp", "dollars", "rupees", "crore", "crores", "lakh", "lakhs"):
                 COMMODITY_USAGE_TERMS = (
@@ -1060,7 +1069,12 @@ class OrchestrationService:
                     if is_unrelated_tam_product:
                         continue
 
-                    macro_ev_input = EvidenceInput(
+                    m_min = item.range_min if (item.range_min is not None and item.range_min >= 1_000_000.0) else None
+                    m_max = item.range_max if (item.range_max is not None and item.range_max >= 1_000_000.0) else None
+                    if m_min is not None and m_max is not None and m_min > m_max:
+                        m_min, m_max = min(m_min, m_max), max(m_min, m_max)
+
+                    macro_ev_input = _safe_create_evidence_input(
                         name=item.metric,
                         value=eff_val,
                         unit=item.unit or (resolved_currency or "USD"),
@@ -1080,40 +1094,41 @@ class OrchestrationService:
                         confidence=conf_status,
                         is_conflict=False,
                         conflicting_values=[v for v in c_vals if v >= 1_000_000.0] if len([v for v in c_vals if v >= 1_000_000.0]) > 1 else [],
-                        range_min=(item.range_min if (item.range_min is not None and item.range_min >= 1_000_000.0) else None),
-                        range_max=(item.range_max if (item.range_max is not None and item.range_max >= 1_000_000.0) else None),
+                        range_min=m_min,
+                        range_max=m_max,
                     )
 
-                    # Category Relevance Scoring (Weight: 100 max)
-                    if tgt_geo_norm and cand_geo_norm == tgt_geo_norm:
-                        geo_align_score = 100.0
-                    elif tgt_geo_norm and tgt_geo_norm in cand_geo_norm:
-                        geo_align_score = 85.0
-                    elif cand_geo_norm in ("global", "worldwide", "world"):
-                        geo_align_score = 40.0
-                    else:
-                        geo_align_score = 10.0
+                    if macro_ev_input is not None:
+                        # Category Relevance Scoring (Weight: 100 max)
+                        if tgt_geo_norm and cand_geo_norm == tgt_geo_norm:
+                            geo_align_score = 100.0
+                        elif tgt_geo_norm and tgt_geo_norm in cand_geo_norm:
+                            geo_align_score = 85.0
+                        elif cand_geo_norm in ("global", "worldwide", "world"):
+                            geo_align_score = 40.0
+                        else:
+                            geo_align_score = 10.0
 
-                    cat_match_score = 0.0
-                    if ind_text and ind_text in full_context_text:
-                        cat_match_score += 40.0
-                    if prod_text and any(pw in full_context_text for pw in prod_text.split() if len(pw) > 3):
-                        cat_match_score += 30.0
-                    cat_match_score += min(50.0, sum(15.0 for kw in biz_keywords if kw in full_context_text))
+                        cat_match_score = 0.0
+                        if ind_text and ind_text in full_context_text:
+                            cat_match_score += 40.0
+                        if prod_text and any(pw in full_context_text for pw in prod_text.split() if len(pw) > 3):
+                            cat_match_score += 30.0
+                        cat_match_score += min(50.0, sum(15.0 for kw in biz_keywords if kw in full_context_text))
 
-                    # Penalize generic macro economy / cross-industry GMV figures
-                    GENERIC_MACRO_TERMS = (
-                        "digital commerce as a whole", "entire e-commerce", "total gmv of digital commerce",
-                        "overall retail commerce", "national gdp", "gross merchandise value (gmv) across all"
-                    )
-                    if any(gm in context_lower for gm in GENERIC_MACRO_TERMS) and not any(k in biz_keywords for k in ("national", "gdp", "macro", "entire", "overall")):
-                        cat_match_score -= 80.0
+                        # Penalize generic macro economy / cross-industry GMV figures
+                        GENERIC_MACRO_TERMS = (
+                            "digital commerce as a whole", "entire e-commerce", "total gmv of digital commerce",
+                            "overall retail commerce", "national gdp", "gross merchandise value (gmv) across all"
+                        )
+                        if any(gm in context_lower for gm in GENERIC_MACRO_TERMS) and not any(k in biz_keywords for k in ("national", "gdp", "macro", "entire", "overall")):
+                            cat_match_score -= 80.0
 
-                    macro_tot_score = geo_align_score + cat_match_score + yr_score + source_tier_score + corrob_score + stage_score
-                    macro_candidates.append((macro_tot_score, float(cand_year), item.candidate_id, macro_ev_input))
+                        macro_tot_score = geo_align_score + cat_match_score + yr_score + source_tier_score + corrob_score + stage_score
+                        macro_candidates.append((macro_tot_score, float(cand_year), item.candidate_id, macro_ev_input))
 
                 elif is_unit_pricing_metric:
-                    pricing_ev_input = EvidenceInput(
+                    pricing_ev_input = _safe_create_evidence_input(
                         name=item.metric,
                         value=eff_val,
                         unit=item.unit or (resolved_currency or "USD"),
@@ -1136,8 +1151,9 @@ class OrchestrationService:
                         range_min=c_min,
                         range_max=c_max,
                     )
-                    price_score = 50.0 + yr_score + source_tier_score + corrob_score + stage_score
-                    pricing_candidates.append((price_score, float(cand_year), item.candidate_id, pricing_ev_input))
+                    if pricing_ev_input is not None:
+                        price_score = 50.0 + yr_score + source_tier_score + corrob_score + stage_score
+                        pricing_candidates.append((price_score, float(cand_year), item.candidate_id, pricing_ev_input))
 
         # Deterministic ranking and top-candidate selection
         if macro_candidates:
@@ -1188,7 +1204,7 @@ class OrchestrationService:
         # Apply explicit user assumptions with robust disambiguation
         for a_name, a_obj in assumptions_map.items():
             if any(k in a_name for k in ("macro", "market_size", "industry_size", "total_market")):
-                macro_market_input = EvidenceInput(
+                in_obj = _safe_create_evidence_input(
                     name=a_obj.name,
                     value=a_obj.value,
                     unit=a_obj.unit,
@@ -1196,8 +1212,10 @@ class OrchestrationService:
                     is_assumption=True,
                     assumption_justification=a_obj.justification,
                 )
+                if in_obj is not None:
+                    macro_market_input = in_obj
             elif any(k in a_name for k in ("price", "arpu", "fee", "cost", "subscription", "pricing", "spend")):
-                pricing_input = EvidenceInput(
+                in_obj = _safe_create_evidence_input(
                     name=a_obj.name,
                     value=a_obj.value,
                     unit=a_obj.unit,
@@ -1205,45 +1223,55 @@ class OrchestrationService:
                     is_assumption=True,
                     assumption_justification=a_obj.justification,
                 )
+                if in_obj is not None:
+                    pricing_input = in_obj
             elif any(k in a_name for k in ("som", "obtainable", "capture", "penetration", "som_share", "market_share")):
-                som_share_input = EvidenceInput(
+                in_obj = _safe_create_evidence_input(
                     name=a_obj.name,
                     value=a_obj.value,
                     unit="%",
                     is_assumption=True,
                     assumption_justification=a_obj.justification,
                 )
+                if in_obj is not None:
+                    som_share_input = in_obj
             elif any(k in a_name for k in ("geo", "geograph", "city", "cities", "urban", "region", "state", "metro")):
-                geo_pct_input = EvidenceInput(
+                in_obj = _safe_create_evidence_input(
                     name=a_obj.name,
                     value=a_obj.value,
                     unit="%",
                     is_assumption=True,
                     assumption_justification=a_obj.justification,
                 )
+                if in_obj is not None:
+                    geo_pct_input = in_obj
             elif any(k in a_name for k in ("serviceable_customer", "serviceable_population", "target_population", "target_customer_count", "serviceable_count")):
-                serviceable_population_input = EvidenceInput(
+                in_obj = _safe_create_evidence_input(
                     name=a_obj.name,
                     value=a_obj.value,
                     unit=a_obj.unit or "units",
                     is_assumption=True,
                     assumption_justification=a_obj.justification,
                 )
+                if in_obj is not None:
+                    serviceable_population_input = in_obj
             elif any(k in a_name for k in ("target", "segment", "sam", "portion", "serviceable", "reach", "share")):
-                target_pct_input = EvidenceInput(
+                in_obj = _safe_create_evidence_input(
                     name=a_obj.name,
                     value=a_obj.value,
                     unit="%",
                     is_assumption=True,
                     assumption_justification=a_obj.justification,
                 )
+                if in_obj is not None:
+                    target_pct_input = in_obj
 
         # Check for top-down market sizing inputs
         top_down_val_input: Optional[EvidenceInput] = macro_market_input
 
         for a_name, a_obj in assumptions_map.items():
             if any(k in a_name for k in ("top_down", "market_size", "tam_value", "industry_tam")):
-                top_down_val_input = EvidenceInput(
+                in_obj = _safe_create_evidence_input(
                     name=a_obj.name,
                     value=a_obj.value,
                     unit=a_obj.unit,
@@ -1251,6 +1279,8 @@ class OrchestrationService:
                     is_assumption=True,
                     assumption_justification=a_obj.justification,
                 )
+                if in_obj is not None:
+                    top_down_val_input = in_obj
 
         td_inputs = None
         if top_down_val_input is not None:

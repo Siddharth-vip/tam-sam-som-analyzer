@@ -177,7 +177,9 @@ NOISE_REJECTION_TERMS = {
     # Bare Adjectives & Syntactic Noise
     "tired", "simple", "best", "top", "great", "awesome", "easy", "fast",
     "quick", "outstanding", "open", "free", "new", "latest", "good", "bad",
-    "more", "less", "metric", "metrics", "number", "numbers", "total", "totals"
+    "more", "less", "metric", "metrics", "number", "numbers", "total", "totals",
+    "jump", "jump from", "to", "from", "rise", "rose", "drop", "fell", "grown",
+    "increased from", "grew from", "rose from", "scaled from", "increase", "decrease"
 }
 
 # Regex identifying listicle headers and publication dates
@@ -424,92 +426,133 @@ class EvidenceExtractionService:
         def spans_overlap(start: int, end: int) -> bool:
             return any(not (end <= s_start or start >= s_end) for s_start, s_end in extracted_spans)
 
-        # 1. Range Pattern: e.g. "10–15 million developers", "USD 2 - 3 billion"
+        # 1. Range Pattern: e.g. "10–15 million developers", "USD 2 - 3 billion", "jump from 128 to 150 million", "increased from 128 million to 150 million users"
         range_match = re.search(
-            r"(\b(?:USD|\$|INR|₹|EUR|€)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:–|-|to)\s*([0-9]+(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?\s*([a-zA-Z%]+)?\b)",
+            r"(\b(?:(?:from|between|ranged from|jump from|increased from|grew from|rose from)\s+)?(?:USD|\$|INR|₹|EUR|€|GBP|£)?\s*([0-9]+(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?\s*(?:–|-|to|and)\s*(?:USD|\$|INR|₹|EUR|€|GBP|£)?\s*([0-9]+(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?\s*([a-zA-Z%]+(?:\s+[a-zA-Z%]+){0,3})?\b)",
             cleaned_sentence,
             re.IGNORECASE,
         )
         if range_match and not spans_overlap(range_match.start(), range_match.end()):
             raw_expr = range_match.group(1).strip()
             min_str = range_match.group(2)
-            max_str = range_match.group(3)
-            multiplier = range_match.group(4)
-            unit_candidate = range_match.group(5)
+            min_multiplier = range_match.group(3)
+            max_str = range_match.group(4)
+            max_multiplier = range_match.group(5)
+            raw_unit_candidate = range_match.group(6)
             cand_geo = self.extract_geography_for_match(cleaned_sentence, range_match.start(), range_match.end())
             cand_year = self.extract_year_for_match(cleaned_sentence, range_match.start(), range_match.end())
 
-            try:
-                min_val = self.parse_number_with_multiplier(min_str, multiplier)
-                max_val = self.parse_number_with_multiplier(max_str, multiplier)
-                unit = unit_candidate.strip() if unit_candidate else "units"
-                if any(curr in raw_expr for curr in ("USD", "$")):
-                    unit = "USD"
-                elif any(curr in raw_expr for curr in ("INR", "₹")):
-                    unit = "INR"
+            is_min_year = min_multiplier is None and min_str.isdigit() and (1990 <= int(min_str) <= 2040)
+            is_max_year = max_multiplier is None and max_str.isdigit() and (1990 <= int(max_str) <= 2040)
 
-                # Filter noise
-                if unit.lower() not in NOISE_REJECTION_TERMS and (unit in ("USD", "INR") or self.is_recognized_market_entity(unit)):
-                    is_explicit_unit_spend = (
-                        (max_val is None or max_val < 1_000_000)
-                        and (
-                            any(w in cleaned_sentence.lower() for w in (
-                                "per companion pet", "per pet", "per animal", "per dog", "per cat",
-                                "per user", "per student", "per customer", "per household", "per head",
-                                "per capita", "per subscriber", "per person", "per unit", "per vehicle",
-                                "per learner", "per account", "per client", "per employee", "per transaction",
-                                "annual expenditure", "annual spend", "expenditure per", "spending per",
-                                "spend per", "cost per", "fee per", "average expenditure", "average spend"
-                            ))
-                            or bool(re.search(r"\bper\s+(?:companion\s+)?(?:pet|dog|cat|animal|user|student|customer|household|head|capita|person|subscriber|learner|account|client|employee|vehicle|unit)\b", cleaned_sentence, re.IGNORECASE))
+            if not is_min_year and not is_max_year:
+                try:
+                    min_val = self.parse_number_with_multiplier(min_str, min_multiplier or max_multiplier)
+                    max_val = self.parse_number_with_multiplier(max_str, max_multiplier or min_multiplier)
+                    if min_val > max_val:
+                        min_val, max_val = max_val, min_val
+                    
+                    stop_words = {
+                        "in", "on", "at", "by", "for", "from", "with", "to", "across",
+                        "is", "are", "was", "were", "and", "or", "as", "during", "of", "who",
+                        "which", "that", "over", "between",
+                    }
+                    trailing_verbs = {"enrolled", "registered", "operating", "living", "located", "based", "working", "contributing"}
+
+                    noun_words = []
+                    for word in (raw_unit_candidate or "").split():
+                        w_lower = word.lower().strip(",.")
+                        if w_lower in stop_words:
+                            break
+                        if w_lower in trailing_verbs and len(noun_words) > 0:
+                            break
+                        if w_lower in NOISE_REJECTION_TERMS:
+                            continue
+                        noun_words.append(word)
+
+                    unit = noun_words[-1] if noun_words else "units"
+                    if any(curr in raw_expr for curr in ("USD", "$", "DOLLAR")):
+                        unit = "USD"
+                    elif any(curr in raw_expr for curr in ("INR", "₹", "RUPEE")):
+                        unit = "INR"
+                    elif any(curr in raw_expr for curr in ("EUR", "€", "EURO")):
+                        unit = "EUR"
+                    elif any(curr in raw_expr for curr in ("GBP", "£", "POUND")):
+                        unit = "GBP"
+                    elif "%" in raw_expr or (raw_unit_candidate and "%" in raw_unit_candidate):
+                        unit = "%"
+
+                    # Filter noise
+                    if unit.lower() not in NOISE_REJECTION_TERMS and (unit in ("USD", "INR", "EUR", "GBP", "%") or self.is_recognized_market_entity(unit)):
+                        is_explicit_unit_spend = (
+                            (max_val is None or max_val < 1_000_000)
+                            and (
+                                any(w in cleaned_sentence.lower() for w in (
+                                    "per companion pet", "per pet", "per animal", "per dog", "per cat",
+                                    "per user", "per student", "per customer", "per household", "per head",
+                                    "per capita", "per subscriber", "per person", "per unit", "per vehicle",
+                                    "per learner", "per account", "per client", "per employee", "per transaction",
+                                    "annual expenditure", "annual spend", "expenditure per", "spending per",
+                                    "spend per", "cost per", "fee per", "average expenditure", "average spend"
+                                ))
+                                or bool(re.search(r"\bper\s+(?:companion\s+)?(?:pet|dog|cat|animal|user|student|customer|household|head|capita|person|subscriber|learner|account|client|employee|vehicle|unit)\b", cleaned_sentence, re.IGNORECASE))
+                            )
                         )
-                    )
-                    is_pricing_term = (
-                        (max_val is None or max_val < 1_000_000)
-                        and any(w in cleaned_sentence.lower() for w in ("price", "pricing", "fee", "cost", "subscription", "arpu", "tuition", "per user", "per student", "per year", "per month", "plan", "annual fee", "per pet", "per customer"))
-                        and not any(w in cleaned_sentence.lower() for w in ("market", "industry", "sector", "total spending", "overall spending", "spending in", "market reached", "market size", "market value", "valuation", "revenues", "revenue"))
-                    )
-                    has_macro_keywords = any(w in cleaned_sentence.lower() for w in (
-                        "market", "industry", "sector", "total spending", "overall spending", "spending in",
-                        "market reached", "market size", "market value", "valuation", "revenues", "revenue",
-                        "market was valued", "market is valued", "market worth"
-                    ))
-                    if unit in ("USD", "INR"):
-                        if is_explicit_unit_spend or is_pricing_term or (max_val is not None and max_val < 1_000_000 and not has_macro_keywords):
-                            m_title = "annual pricing / ARPU"
-                            m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence) or MarketMetricType.AVERAGE_PRICE
+                        is_pricing_term = (
+                            (max_val is None or max_val < 1_000_000)
+                            and any(w in cleaned_sentence.lower() for w in ("price", "pricing", "fee", "cost", "subscription", "arpu", "tuition", "per user", "per student", "per year", "per month", "plan", "annual fee", "per pet", "per customer"))
+                            and not any(w in cleaned_sentence.lower() for w in ("market", "industry", "sector", "total spending", "overall spending", "spending in", "market reached", "market size", "market value", "valuation", "revenues", "revenue"))
+                        )
+                        has_macro_keywords = any(w in cleaned_sentence.lower() for w in (
+                            "market", "industry", "sector", "total spending", "overall spending", "spending in",
+                            "market reached", "market size", "market value", "valuation", "revenues", "revenue",
+                            "market was valued", "market is valued", "market worth"
+                        ))
+                        if unit in ("USD", "INR", "EUR", "GBP"):
+                            has_macro_multiplier = (min_multiplier and min_multiplier.lower() in MULTIPLIERS and MULTIPLIERS[min_multiplier.lower()] >= 1_000_000.0) or (max_multiplier and max_multiplier.lower() in MULTIPLIERS and MULTIPLIERS[max_multiplier.lower()] >= 1_000_000.0)
+                            is_macro_scale = has_macro_multiplier or (max_val is not None and max_val >= 1_000_000.0)
+                            if is_explicit_unit_spend or is_pricing_term or not is_macro_scale:
+                                m_title = "annual pricing / ARPU"
+                                m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence, value=max_val) or MarketMetricType.AVERAGE_PRICE
+                            else:
+                                m_title = "market size / revenue"
+                                m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence, value=max_val) or MarketMetricType.MARKET_SIZE
+                        elif unit == "%":
+                            is_growth = any(w in cleaned_sentence.lower() for w in ("growth", "cagr", "increase", "yoy", "year-on-year", "annual growth", "grew", "jump", "rise", "rose"))
+                            if is_growth or (max_val is not None and max_val > 100.0):
+                                m_title = "growth rate / CAGR"
+                                m_type = MarketMetricType.GROWTH_RATE
+                            else:
+                                m_title = " ".join(noun_words) if noun_words else "market share / segment percentage"
+                                m_type = MarketMetricType.MARKET_SHARE
                         else:
-                            m_title = "market size / revenue"
-                            m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence) or MarketMetricType.MARKET_SIZE
-                    else:
-                        m_title = unit
-                        m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence)
+                            m_title = " ".join(noun_words) if noun_words else unit
+                            m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence)
 
-                    mid_val = (min_val + max_val) / 2.0 if (min_val is not None and max_val is not None) else (min_val or max_val)
-                    candidates.append(
-                        ExtractedEvidenceCandidate(
-                            metric=m_title,
-                            metric_type=m_type,
-                            value=None,
-                            raw_value_expression=raw_expr,
-                            unit=unit,
-                            geography=cand_geo,
-                            year=cand_year,
-                            is_range_or_approximate=True,
-                            range_min=min_val,
-                            range_max=max_val,
-                            source_name=source_name,
-                            source_url=source_url,
-                            source_context=cleaned_sentence,
-                            extraction_method=ExtractionMethod.DETERMINISTIC_PATTERN,
-                            extraction_confidence=ConfidenceLevel.MEDIUM,
-                            lifecycle_stage=DiscoveryLifecycleStage.EXTRACTED,
-                            notes=f"Extracted range: {min_val} to {max_val} {unit}",
+                        candidates.append(
+                            ExtractedEvidenceCandidate(
+                                metric=m_title,
+                                metric_type=m_type,
+                                value=None,
+                                raw_value_expression=raw_expr,
+                                unit=unit,
+                                geography=cand_geo,
+                                year=cand_year,
+                                is_range_or_approximate=True,
+                                range_min=min_val,
+                                range_max=max_val,
+                                source_name=source_name,
+                                source_url=source_url,
+                                source_context=cleaned_sentence,
+                                extraction_method=ExtractionMethod.DETERMINISTIC_PATTERN,
+                                extraction_confidence=ConfidenceLevel.MEDIUM,
+                                lifecycle_stage=DiscoveryLifecycleStage.EXTRACTED,
+                                notes=f"Extracted range: {min_val} to {max_val} {unit}",
+                            )
                         )
-                    )
-                    extracted_spans.append((range_match.start(), range_match.end()))
-            except Exception:
-                pass
+                        extracted_spans.append((range_match.start(), range_match.end()))
+                except Exception:
+                    pass
 
         # 2. Approximate Pattern: e.g. "more than 10 million users", "approximately 500,000 college students"
         for approx_prefix in APPROX_QUALIFIERS:
@@ -741,12 +784,20 @@ class EvidenceExtractionService:
                 cand_year = self.extract_year_for_match(cleaned_sentence, pct_match.start(), pct_match.end())
                 try:
                     pct_val = float(pct_num_str)
-                    is_growth = any(w in cleaned_sentence.lower() for w in ("growth", "cagr", "increase", "yoy", "year-on-year", "annual growth", "grew"))
-                    if is_growth:
+                    is_growth = any(w in cleaned_sentence.lower() for w in ("growth", "cagr", "increase", "yoy", "year-on-year", "annual growth", "grew", "jump", "rise", "rose", "scaled"))
+                    
+                    # Clean trailing words from prepositions and noise
+                    trailing_words = [
+                        w for w in raw_trailing.split()
+                        if w.lower() not in NOISE_REJECTION_TERMS and w.lower() not in ("to", "and", "in", "by", "from", "for", "during", "between", "with", "while", "as", "of")
+                    ]
+                    cleaned_trailing = " ".join(trailing_words)
+
+                    if is_growth or pct_val > 100.0:
                         m_title = "growth rate / CAGR"
                         m_type = MarketMetricType.GROWTH_RATE
                     else:
-                        m_title = raw_trailing if raw_trailing else "market share / segment percentage"
+                        m_title = cleaned_trailing if cleaned_trailing else "market share / segment percentage"
                         m_type = MarketMetricType.MARKET_SHARE
 
                     candidates.append(
