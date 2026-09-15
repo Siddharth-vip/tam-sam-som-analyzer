@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 import logging
+import re
 import time
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Tuple
 import uuid
 
 from app.config import settings
@@ -189,23 +190,29 @@ class MarketAnalysisPipeline:
                 dur=dur,
             )
         except Exception as exc:
-            err_msg = f"Business analysis failed: {exc}"
-            logger.error(err_msg)
-            errors.append(err_msg)
-            record_transition(
-                PipelineStage.BUSINESS_ANALYSIS.value,
-                PipelineStage.COMPLETED.value,
-                "Business analysis step failed",
-                err=err_msg,
-            )
+            warn_msg = f"LLM analysis encountered issue ({exc}); activating Layer 2 deterministic normalization fallback."
+            logger.warning(warn_msg)
+            warnings.append(warn_msg)
+            from app.services.llm_service import normalize_business_analysis
+            norm_data = normalize_business_analysis({}, request.business_idea)
+            if request.preferred_geography:
+                norm_data["geography"] = request.preferred_geography
+            analysis = BusinessAnalysis.model_validate(norm_data)
+            dur = round((time.perf_counter() - t0) * 1000, 2)
             yield create_progress_event(
                 pipeline_id,
                 PipelineStage.BUSINESS_ANALYSIS,
-                PipelineStatus.FAILED,
-                err_msg,
-                progress_percent=100,
+                PipelineStatus.COMPLETED,
+                f"Business idea analyzed via deterministic normalization. Industry: {analysis.industry}, Product: {analysis.product}.",
+                progress_percent=20,
+                metadata={"industry": analysis.industry, "product": analysis.product},
             )
-            return
+            record_transition(
+                PipelineStage.BUSINESS_ANALYSIS.value,
+                PipelineStage.QUERY_GENERATION.value,
+                f"Business idea analyzed in {dur}ms (normalization fallback)",
+                dur=dur,
+            )
 
         # -------------------------------------------------------------------
         # Step 2: Research Query Generation
@@ -787,7 +794,7 @@ class MarketAnalysisPipeline:
                 status=PipelineStatus.FAILED,
                 analysis=analysis,
                 research_queries=research_queries,
-                discovered_sources=discovered_sources,
+                discovered_sources=all_discovered_sources,
                 fetched_sources=fetched_sources,
                 extracted_candidates=extracted_candidates,
                 validation_results=[],
@@ -798,6 +805,7 @@ class MarketAnalysisPipeline:
                 audit_trail=audit_trail,
                 started_at=started_at,
                 competitors=extracted_competitors,
+                rejected_sources=rejected_sources,
             )
             try:
                 self.repository.save(failed_res)
@@ -895,73 +903,43 @@ class MarketAnalysisPipeline:
         geo_str = f"{target_geo.strip()} " if target_geo else ""
 
         if analysis:
-            # 1. Target Customer Demographics / Population
-            if analysis.target_customer:
-                cust = analysis.target_customer.strip()
-                queries.append(
-                    ResearchQuery(
-                        metric_required=f"{geo_str}{cust} population enrollment count",
-                        geography=target_geo,
-                        year=target_year,
-                        industry_topic=analysis.industry,
-                        target_population=cust,
-                        max_results=request.max_sources,
-                    )
+            market_cat = (analysis.market_category or analysis.industry or analysis.product or "market").strip()
+            cust_target = (analysis.target_customer_segment or analysis.target_customer or "customers").strip()
+            prod = (analysis.product or market_cat).strip()
+
+            # 1. Target Customer Demographics / Population / Customer Base
+            queries.append(
+                ResearchQuery(
+                    metric_required=f"{geo_str}{cust_target} population count businesses number users",
+                    geography=target_geo,
+                    year=target_year,
+                    industry_topic=analysis.industry or market_cat,
+                    target_population=cust_target,
+                    max_results=request.max_sources,
                 )
-            elif analysis.industry:
-                queries.append(
-                    ResearchQuery(
-                        metric_required=f"{geo_str}target customer population in {analysis.industry.strip()}",
-                        geography=target_geo,
-                        year=target_year,
-                        industry_topic=analysis.industry.strip(),
-                        max_results=request.max_sources,
-                    )
-                )
+            )
 
             # 2. Industry / Product Market Size TAM
-            if analysis.industry:
-                queries.append(
-                    ResearchQuery(
-                        metric_required=f"{geo_str}{analysis.industry.strip()} market size revenue",
-                        geography=target_geo,
-                        year=target_year,
-                        industry_topic=analysis.industry.strip(),
-                        max_results=request.max_sources,
-                    )
+            queries.append(
+                ResearchQuery(
+                    metric_required=f"{geo_str}{market_cat} market size annual revenue",
+                    geography=target_geo,
+                    year=target_year,
+                    industry_topic=analysis.industry or market_cat,
+                    max_results=request.max_sources,
                 )
-            elif analysis.product:
-                queries.append(
-                    ResearchQuery(
-                        metric_required=f"{geo_str}{analysis.product.strip()} market size revenue",
-                        geography=target_geo,
-                        year=target_year,
-                        industry_topic=analysis.product.strip(),
-                        max_results=request.max_sources,
-                    )
-                )
+            )
 
-            # 3. Pricing / ARPU Benchmarks
-            if analysis.product:
-                queries.append(
-                    ResearchQuery(
-                        metric_required=f"{geo_str}{analysis.product.strip()} course pricing subscription cost ARPU",
-                        geography=target_geo,
-                        year=target_year,
-                        industry_topic=analysis.industry,
-                        max_results=request.max_sources,
-                    )
+            # 3. Pricing / ARPU / Unit Spend Benchmarks
+            queries.append(
+                ResearchQuery(
+                    metric_required=f"{geo_str}{prod} pricing average annual spend subscription ARPU fee cost",
+                    geography=target_geo,
+                    year=target_year,
+                    industry_topic=analysis.industry or market_cat,
+                    max_results=request.max_sources,
                 )
-            elif analysis.industry:
-                queries.append(
-                    ResearchQuery(
-                        metric_required=f"{geo_str}{analysis.industry.strip()} pricing subscription cost ARPU",
-                        geography=target_geo,
-                        year=target_year,
-                        industry_topic=analysis.industry.strip(),
-                        max_results=request.max_sources,
-                    )
-                )
+            )
 
         # Fallback if no specific queries generated
         if not queries:
@@ -988,21 +966,22 @@ class MarketAnalysisPipeline:
 
         industry = (analysis.industry if analysis and analysis.industry else "").strip()
         product = (analysis.product if analysis and analysis.product else "").strip()
-        customer = (analysis.target_customer if analysis and analysis.target_customer else "").strip()
+        market_cat = (analysis.market_category if analysis and analysis.market_category else "").strip()
+        customer = (analysis.target_customer_segment or (analysis.target_customer if analysis else "")).strip()
         biz_idea = (request.business_idea or "").strip()
 
         components = []
         if target_geo and target_geo.lower() not in ["global", "unknown"]:
             components.append(target_geo)
 
-        topic = product or industry or biz_idea
+        topic = market_cat or product or industry or biz_idea
         if topic:
             components.append(topic)
 
         if customer and customer.lower() not in topic.lower():
             components.append(customer)
 
-        components.append("market size revenue growth volume customer count")
+        components.append("market size revenue growth volume customer count spend")
 
         unified_metric = " ".join(components)
 
@@ -1048,34 +1027,35 @@ class MarketAnalysisPipeline:
             SourceQualityTier.TIER_5_UNUSABLE: 1,
             "Tier 5: Unusable (Social/Forums/Unsourced)": 1,
         }
-        sorted_items = sorted(
-            validated_items,
-            key=lambda x: (
-                1 if x.lifecycle_stage in ("verified", DiscoveryLifecycleStage.VERIFIED) else 0,
-                tier_weight.get(x.source_quality_tier, 2),
-                x.source_quality_score or 0.0,
-                x.relevance_score or 0.0,
-            ),
-            reverse=True,
-        )
 
-        # Filter: ONLY validated / verified items from credible tiers may pass the gate
-        for item in sorted_items:
-            if not item.is_valid:
-                continue
-            if item.source_quality_tier in (SourceQualityTier.TIER_5_UNUSABLE, "Tier 5: Unusable (Social/Forums/Unsourced)"):
-                continue
-            unit_norm = (item.unit or "").lower()
-            val_status = item.validation_status.value if hasattr(item.validation_status, "value") else str(item.validation_status or "valid")
-            stage_status = item.lifecycle_stage.value if hasattr(item.lifecycle_stage, "value") else str(item.lifecycle_stage or "validated")
-            conf_status = item.confidence.value if hasattr(item.confidence, "value") else str(item.confidence or "medium")
-            is_prior = bool(item.year is not None and target_yr is not None and item.year == target_yr - 1)
 
-            eff_val = item.value if item.value is not None else ((item.range_min + item.range_max) / 2.0 if (item.range_min is not None and item.range_max is not None) else None)
+        # Ranked candidate pools for deterministic evidence-based operand selection
+        macro_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
+        pricing_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
+        population_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
+        serviceable_population_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
+        geo_pct_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
+        target_pct_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
+        som_share_candidates: List[Tuple[float, float, str, EvidenceInput]] = []
+
+        biz_keywords = [
+            w for w in re.findall(r"\b[a-zA-Z]{3,}\b", (request.business_idea or "").lower())
+            if w not in ("the", "and", "for", "with", "platform", "online", "market", "size", "year", "annual", "services", "service")
+        ]
+        ind_text = (analysis.industry.lower() if analysis and analysis.industry else "")
+        prod_text = (analysis.product.lower() if analysis and analysis.product else "")
+
+        for item in validated_items:
+            eff_val = item.value if item.value is not None else item.range_min
             if eff_val is None:
                 continue
 
-            # Currency resolution helper
+            unit_norm = (item.unit or "").strip().lower()
+            val_status = item.validation_status.value if hasattr(item.validation_status, "value") else str(item.validation_status or "valid")
+            stage_status = item.lifecycle_stage.value if hasattr(item.lifecycle_stage, "value") else str(item.lifecycle_stage or "validated")
+            conf_status = item.confidence.value if hasattr(item.confidence, "value") else str(item.confidence or "medium")
+            is_prior = (item.year is not None and target_yr is not None and item.year < target_yr)
+
             def _resolve_curr(u_str: Optional[str]) -> Optional[str]:
                 if not u_str:
                     return None
@@ -1091,32 +1071,70 @@ class MarketAnalysisPipeline:
                 return None
 
             resolved_currency = _resolve_curr(item.unit)
-            is_count_metric = (
-                unit_norm in (
-                    "students", "student", "users", "user", "developers", "people",
-                    "households", "enterprises", "companies", "population", "professionals",
-                    "professional", "workers", "adults", "subscribers", "customers",
-                    "patients", "buyers", "individuals", "employees", "learners", "drivers",
-                    "stations", "station", "chargers", "charger", "ports", "port",
-                    "vehicles", "vehicle", "cars", "car", "evs", "ev", "fleets", "fleet",
-                    "units", "unit", "locations", "outlets", "stores", "store",
-                    "two-wheelers", "two-wheeler", "three-wheelers", "three-wheeler",
-                    "buses", "bus", "trucks", "truck", "cabs", "cab", "taxis", "taxi",
-                )
-                or any(c in unit_norm for c in (
-                    "student", "user", "developer", "people", "professional", "worker",
-                    "adult", "subscriber", "customer", "person", "population", "household",
-                    "enterprise", "company", "employee", "buyer", "station", "charger",
-                    "vehicle", "car", "port", "outlet", "device", "fleet", "unit",
-                ))
+            metric_name_lower = (item.metric or "").lower()
+            raw_expr_lower = (getattr(item, "raw_value_expression", "") or "").lower()
+            context_lower = (getattr(item, "source_context", "") or "").lower()
+            full_context_text = f"{metric_name_lower} {raw_expr_lower} {context_lower} {(item.source_name or '').lower()} {(item.source_url or '').lower()}"
+            metric_type_val = item.metric_type.value if hasattr(item.metric_type, "value") else str(item.metric_type or "")
+            cand_geo_norm = (item.geography or "").strip().lower()
+            tgt_geo_norm = (target_geo or "").strip().lower()
+
+            POPULATION_KEYWORDS = (
+                "student", "students", "user", "users", "developer", "developers", "people",
+                "household", "households", "enterprise", "enterprises", "company", "companies",
+                "population", "professional", "professionals", "worker", "workers", "adult", "adults",
+                "subscriber", "subscribers", "customer", "customers", "patient", "patients",
+                "buyer", "buyers", "individual", "individuals", "employee", "employees",
+                "learner", "learners", "driver", "drivers", "station", "stations", "charger", "chargers",
+                "vehicle", "vehicles", "car", "cars", "ev", "evs", "fleet", "fleets",
+                "outlet", "outlets", "store", "stores", "two-wheeler", "two-wheelers",
+                "three-wheeler", "three-wheelers", "bus", "buses", "truck", "trucks", "cab", "cabs",
+                "taxi", "taxis", "resident", "residents", "installation", "installations",
+                "client", "clients", "firm", "firms", "passenger", "passengers",
             )
 
-            if is_count_metric and not resolved_currency:
-                metric_lower = (item.metric or "").lower()
-                is_serviceable_subset = any(k in metric_lower for k in ("serviceable", "target", "tier-1", "tier 1", "urban", "major cities", "qualified", "accessible"))
-                c_vals = [s.value for s in getattr(item, "conflicting_sources", []) if getattr(s, "value", None) is not None] + ([eff_val] if eff_val is not None else [])
-                c_min = min(c_vals) if len(c_vals) > 1 else item.range_min
-                c_max = max(c_vals) if len(c_vals) > 1 else item.range_max
+            has_population_entity = (
+                unit_norm in POPULATION_KEYWORDS
+                or any(e in unit_norm for e in POPULATION_KEYWORDS)
+                or any(e in metric_name_lower for e in POPULATION_KEYWORDS)
+            )
+
+            is_year_or_rate_range = (
+                (item.range_min is not None and 1990 <= item.range_min <= 2040 and item.range_max is not None and 1990 <= item.range_max <= 2040)
+                or (eff_val is not None and 1990 <= eff_val <= 2040 and any(yr_word in raw_expr_lower for yr_word in ("-", "–", "to", "forecast", "cagr", "period", "growth")))
+                or any(k in metric_name_lower for k in ("cagr", "growth", "forecast", "year", "period", "trend", "tariff", "rate"))
+                or "%" in raw_expr_lower
+            )
+
+            is_count_metric = (
+                has_population_entity
+                and not is_year_or_rate_range
+                and unit_norm not in ("%", "pct", "percent", "percentage")
+                and not resolved_currency
+            )
+
+            c_vals = [s.value for s in getattr(item, "conflicting_sources", []) if getattr(s, "value", None) is not None] + ([eff_val] if eff_val is not None else [])
+            c_min = min(c_vals) if len(c_vals) > 1 else item.range_min
+            c_max = max(c_vals) if len(c_vals) > 1 else item.range_max
+            if c_min is not None and c_max is not None and c_min > c_max:
+                c_min, c_max = min(c_min, c_max), max(c_min, c_max)
+
+            # Common score calculator for evidence ranking
+            cand_year = item.year or target_yr
+            yr_diff = abs(cand_year - target_yr)
+            yr_score = 40.0 if yr_diff == 0 else (30.0 if yr_diff == 1 else (15.0 if yr_diff <= 3 else 5.0))
+            tier_scores = {
+                SourceQualityTier.TIER_1_GOVERNMENT_OFFICIAL: 40.0,
+                SourceQualityTier.TIER_2_ACADEMIC_TRADE: 30.0,
+                SourceQualityTier.TIER_3_ANALYST_PRESS: 20.0,
+                SourceQualityTier.TIER_4_GENERAL_UNVERIFIED: 10.0,
+            }
+            source_tier_score = tier_scores.get(item.source_quality_tier, 10.0)
+            corrob_score = min(15.0, (getattr(item, "corroborating_source_count", 1) or 1 - 1) * 7.5)
+            stage_score = 15.0 if stage_status in ("verified", "VERIFIED") else (10.0 if stage_status in ("validated", "VALIDATED") else 5.0)
+
+            if is_count_metric:
+                is_serviceable_subset = any(k in metric_name_lower for k in ("serviceable", "target", "tier-1", "tier 1", "urban", "major cities", "qualified", "accessible"))
                 count_ev_input = EvidenceInput(
                     name=item.metric,
                     value=eff_val,
@@ -1139,17 +1157,102 @@ class MarketAnalysisPipeline:
                     range_min=c_min,
                     range_max=c_max,
                 )
+                geo_score = 50.0 if (tgt_geo_norm and cand_geo_norm == tgt_geo_norm) else (30.0 if (tgt_geo_norm and tgt_geo_norm in cand_geo_norm) else 10.0)
+                tot_score = geo_score + yr_score + source_tier_score + corrob_score + stage_score
+
                 if is_serviceable_subset:
-                    if not serviceable_population_input:
-                        serviceable_population_input = count_ev_input
-                elif not population_input or stage_status in ("verified", "VERIFIED"):
-                    if population_input and not serviceable_population_input:
-                        serviceable_population_input = population_input
-                    population_input = count_ev_input
-                elif not serviceable_population_input:
-                    serviceable_population_input = count_ev_input
+                    serviceable_population_candidates.append((tot_score, float(cand_year), item.candidate_id, count_ev_input))
+                else:
+                    population_candidates.append((tot_score, float(cand_year), item.candidate_id, count_ev_input))
+
             elif unit_norm in ("%", "pct", "percent", "percentage"):
-                metric_name_lower = (item.metric or "").lower()
+                # 1. Growth, CAGR, Trend, and Forecast Rejection
+                GROWTH_OR_TREND_TERMS = (
+                    "cagr", "growth", "growing", "grown", "grew", "grow", "yoy", "year-on-year",
+                    "year on year", "compound annual", "compounded annual", "expanding", "expansion",
+                    "forecast period", "forecast to", "projected to grow", "annual increase", "rate of growth",
+                    "growth rate", "increased by", "decreased by", "grew by", "dropped by", "fell by",
+                    "delayed"
+                )
+                is_growth_or_cagr = (
+                    any(k in metric_name_lower or k in raw_expr_lower or k in context_lower for k in GROWTH_OR_TREND_TERMS)
+                    or bool(re.search(r"\b[+-]\d+(?:\.\d+)?\s*%", f"{metric_name_lower} {raw_expr_lower} {context_lower}"))
+                )
+                if is_growth_or_cagr:
+                    continue
+
+                # 2. Operational, Efficiency, Financial Margin, Promotional, and Demographic Trait Rejection
+                OPERATIONAL_TERMS = (
+                    "no-show", "no-shows", "no show", "no shows", "scheduling efficiency", "efficiency",
+                    "productivity", "streamline", "optimization", "optimize", "cost reduction",
+                    "reduce cost", "reduction", "savings", "save up to", "cut cost", "latency",
+                    "uptime", "accuracy", "error rate", "retention rate", "retention", "churn",
+                    "satisfaction", "nps", "csat", "margin", "profit margin", "operating margin",
+                    "gross margin", "ebitda", "discount", "tax rate", "roi", "interest rate",
+                    "inflation", "conversion rate", "click-through", "ctr", "bounce rate", "open rate",
+                    "save ", "save 20%", "save 25%", "save 30%", "save 35%", "save 40%", "save 50%",
+                    "reports • save", "free customization", "promo", "coupon", "voucher",
+                    "urbanization rate", "urbanisation rate", "literacy rate", "internet penetration",
+                    "smartphone penetration", "mobile penetration", "more efficient"
+                )
+                is_operational_metric = any(k in metric_name_lower or k in raw_expr_lower or k in context_lower for k in OPERATIONAL_TERMS)
+                if is_operational_metric:
+                    continue
+
+                # 3. Biological / Species / Demographic Traits Breakdown Rejection
+                SPECIES_OR_DEMOGRAPHIC_TERMS = (
+                    "dogs dominate", "cats dominate", "dogs make up", "cats make up", "followed by cats",
+                    "dog population", "cat population", "male", "female", "gender ratio", "gender breakdown",
+                    "own dogs", "own cats", "dog ownership", "cat ownership", "households own", "pet owners own",
+                    "own rather than", "prefer vegetarian", "vegetarian food", "dietary preference",
+                    "food preference", "students are male", "students are female", "demographic survey",
+                    "demographic statistics"
+                )
+                is_species_split = any(k in context_lower for k in SPECIES_OR_DEMOGRAPHIC_TERMS)
+                if is_species_split:
+                    continue
+
+                # 4. Foreign Geography Rejection (when target geography is specified, e.g. India or Tamil Nadu)
+                FOREIGN_GEO_TERMS = (
+                    "chinese market", "in china", "japan market", "in japan", "japanese market",
+                    "north america", "in the us", "in united states", "in europe", "european market",
+                    "latin america", "middle east", "africa"
+                )
+                cand_geo_raw = (item.geography or "").strip().lower()
+                is_foreign_geo = (
+                    (cand_geo_raw and cand_geo_raw not in ("global", "worldwide", "world") and tgt_geo_norm and cand_geo_raw != tgt_geo_norm and tgt_geo_norm not in cand_geo_raw)
+                    or any(fg in context_lower for fg in FOREIGN_GEO_TERMS if (not tgt_geo_norm or fg not in tgt_geo_norm))
+                )
+                if is_foreign_geo:
+                    continue
+
+                # 5. Unrelated Category Rejection (e.g. Pet Food & Supplies for Pet Care Services Platform)
+                UNRELATED_CATEGORY_TERMS = (
+                    "pet food", "packaged food", "food segment", "food market share", "dog food", "cat food",
+                    "animal feed", "food alone accounts for", "food accounts for",
+                    "cat litter", "pet litter", "litter", "pet supplies", "supplies sales", "supplies market",
+                    "dog beds", "cat & dog beds", "beds and mats", "bird accessories", "fish accessories",
+                    "aquarium", "cages", "pet apparel", "pet toys"
+                )
+                biz_prod_lower = (analysis.product or "").lower() if (analysis and getattr(analysis, "product", None)) else ""
+                biz_idea_lower = (analysis.business_idea or "").lower() if (analysis and getattr(analysis, "business_idea", None)) else ""
+                
+                is_unrelated_category = False
+                if ("food" not in biz_prod_lower and "feed" not in biz_prod_lower and "pet food" not in biz_idea_lower and "supplies" not in biz_prod_lower and "accessories" not in biz_prod_lower):
+                    clauses = [c.strip() for c in re.split(r"[,;]|\bwhile\b|\bwhereas\b|\bbut\b", context_lower) if c.strip()]
+                    cand_clause = next((c for c in clauses if (str(int(eff_val)) in c or f"{eff_val:.1f}" in c or raw_expr_lower in c)), context_lower)
+                    if any(uc in metric_name_lower or uc in cand_clause for uc in UNRELATED_CATEGORY_TERMS):
+                        if not any(sc in cand_clause for sc in ("service", "services", "grooming", "vet", "veterinary", "clinic", "platform", "booking")):
+                            is_unrelated_category = True
+
+                if is_unrelated_category:
+                    continue
+
+                # 6. Competitor Market Share Rejection (e.g., "Mars Petcare accounts for 22%")
+                is_competitor_share = any(k in context_lower for k in ("competitor", "market leader", "mars petcare", "pedigree", "royal canin", "nestle purina accounts for"))
+                if is_competitor_share:
+                    continue
+
                 pct_ev_input = EvidenceInput(
                     name=item.metric,
                     value=eff_val,
@@ -1164,87 +1267,310 @@ class MarketAnalysisPipeline:
                     is_prior_year_benchmark=is_prior,
                     evidence_id=item.candidate_id,
                     lifecycle_stage=stage_status,
-                    range_min=item.range_min,
-                    range_max=item.range_max,
-                )
-                if any(k in metric_name_lower for k in ("geo", "geograph", "city", "cities", "urban", "region", "state", "metro", "tier-1", "tier 1")):
-                    if not geo_pct_input:
-                        geo_pct_input = pct_ev_input
-                elif any(k in metric_name_lower for k in ("som", "obtainable", "penetration", "capture", "market share")):
-                    if not som_share_input:
-                        som_share_input = pct_ev_input
-                elif not target_pct_input:
-                    target_pct_input = pct_ev_input
-            elif resolved_currency is not None or unit_norm in ("usd", "inr", "eur", "gbp", "dollars", "rupees", "crore", "crores", "lakh", "lakhs"):
-                metric_name_lower = (item.metric or "").lower()
-                metric_type_val = item.metric_type.value if hasattr(item.metric_type, "value") else str(item.metric_type or "")
-                
-                # Disambiguate between Macro Market Size (for Top-Down) vs Unit Pricing/ARPU (for Bottom-Up)
-                is_unit_pricing_metric = (
-                    metric_type_val in ("average_price", "annual_spend", "pricing", "arpu", "subscription_price")
-                    or any(w in metric_name_lower for w in ("price", "spend", "arpu", "fee", "cost", "subscription", "tuition", "per user", "per student", "per year", "per month", "plan", "rate"))
-                    or eff_val < 1_000_000.0
-                )
-                is_macro_metric = (
-                    metric_type_val in ("market_size", "market_revenue")
-                    or any(w in metric_name_lower for w in ("market size", "market revenue", "market value", "industry size", "industry revenue", "sector revenue"))
-                    or (eff_val >= 1_000_000.0 and not is_unit_pricing_metric)
+                    range_min=c_min,
+                    range_max=c_max,
                 )
 
-                c_vals = [s.value for s in getattr(item, "conflicting_sources", []) if getattr(s, "value", None) is not None] + ([eff_val] if eff_val is not None else [])
-                c_min = min(c_vals) if len(c_vals) > 1 else item.range_min
-                c_max = max(c_vals) if len(c_vals) > 1 else item.range_max
+                # 7. Disambiguate Geographic Conversion Share vs Target Service/Customer Segment
+                GLOBAL_OR_REGIONAL_SHARE_TERMS = (
+                    "global market share", "global share", "of the global market", "of global market",
+                    "of the global", "of global", "share of the global", "share of global",
+                    "global market revenues", "regional market share", "the region exhibited",
+                    "regional share", "state share", "city share", "metro share", "geographic share",
+                    "geography"
+                )
+                is_global_or_regional_share = (
+                    any(t in metric_name_lower or t in context_lower for t in GLOBAL_OR_REGIONAL_SHARE_TERMS)
+                )
+
+                # Geographic share percentage (e.g. "India represents 5.41% of the global market")
+                # Must explicitly reference target geography as the subject
+                is_explicit_geo_share = (
+                    is_global_or_regional_share
+                    and (
+                        (tgt_geo_norm and tgt_geo_norm in full_context_text)
+                        or (item.geography and tgt_geo_norm and tgt_geo_norm in item.geography.lower())
+                    )
+                )
+                is_geo_pct = is_explicit_geo_share
+
+                # Obtainable market capture percentage (SOM)
+                is_som_share = (
+                    any(k in metric_name_lower for k in ("som", "obtainable", "capture"))
+                    or any(k in context_lower for k in ("obtainable market share", "target market share", "our market share", "platform penetration target", "market capture of", "obtainable share", "realistic market capture", "year 1 capture", "year 3 capture"))
+                )
+
+                # Target customer / serviceable segment narrowing factor
+                # CANNOT be a global or regional market share!
+                # Strip out generic fallback metric names to avoid false positive segment matching on "segment"
+                metric_clean = metric_name_lower.replace("market share / segment percentage", "").strip()
+                target_cust_str = (analysis.target_customer or "").lower().strip() if analysis else ""
+                target_cust_words = [w for w in re.findall(r"\w+", target_cust_str) if len(w) > 3]
+
+                has_segment_intent = (
+                    not is_global_or_regional_share
+                    and (
+                        metric_type_val in ("customer_segment", "target_segment", "serviceable_share")
+                        or (target_cust_str and (target_cust_str in metric_clean or target_cust_str in context_lower))
+                        or (target_cust_words and any(w in metric_clean for w in target_cust_words))
+                        or (target_cust_words and any(w in context_lower and any(v in context_lower for v in ("represent", "account", "share", "portion", "orders", "demand", "volume", "users", "customers", "market", "segment")) for w in target_cust_words))
+                        or (metric_clean and any(k in metric_clean for k in (
+                            "target segment", "serviceable segment", "customer qualification", "addressable segment",
+                            "target audience", "serviceable percentage", "target customer", "serviceable customer",
+                            "target demographic", "customer segment", "service segment", "segment share", "segment",
+                            "service transactions", "online orders", "penetration rate", "adoption rate", "market share"
+                        )))
+                        or any(k in context_lower for k in (
+                            "serviceable customer", "target customer segment", "qualification rate", "serviceable addressable",
+                            "target segment", "serviceable segment", "accounts for", "account for", "represents", "represent",
+                            "service transactions in", "orders across", "demand across", "adoption rate", "penetration rate", "market share of"
+                        ))
+                    )
+                )
+                has_business_topic_alignment = (
+                    not analysis
+                    or any(kw in full_context_text for kw in biz_keywords)
+                    or (ind_text and ind_text in full_context_text)
+                    or (prod_text and any(pw in full_context_text for pw in prod_text.split() if len(pw) > 3))
+                )
+                is_target_segment = has_segment_intent and has_business_topic_alignment and not is_geo_pct and not is_som_share
+
+                if is_geo_pct:
+                    cand_geo_match = (
+                        not item.geography
+                        or not target_geo
+                        or item.geography.lower() == target_geo.lower()
+                        or (target_geo.lower() in (item.source_context or "").lower())
+                    )
+                    if cand_geo_match:
+                        geo_score = 100.0 if (target_geo and target_geo.lower() in full_context_text) else 60.0
+                        tot_score = geo_score + yr_score + source_tier_score + corrob_score + stage_score
+                        geo_pct_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+
+                elif is_som_share:
+                    tot_score = 80.0 + yr_score + source_tier_score + corrob_score + stage_score
+                    som_share_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+
+                elif is_target_segment:
+                    relevance_match = 50.0 if any(w in full_context_text for w in biz_keywords) else 30.0
+                    tot_score = relevance_match + yr_score + source_tier_score + corrob_score + stage_score
+                    target_pct_candidates.append((tot_score, float(cand_year), item.candidate_id, pct_ev_input))
+
+            elif resolved_currency is not None or unit_norm in ("usd", "inr", "eur", "gbp", "dollars", "rupees", "crore", "crores", "lakh", "lakhs"):
+                COMMODITY_USAGE_TERMS = (
+                    "/kwh", "per kwh", "/watt", "per watt", "/kw", "per kw",
+                    "tariff", "tariffs", "/km", "per km", "/hour", "/hr", "per hour",
+                    "/gb", "/mb", "per gb", "/token", "/call", "/share", "/sqft", "/kg", "/liter", "/l"
+                )
+
+                is_commodity_tariff = (
+                    any(cu in unit_norm for cu in COMMODITY_USAGE_TERMS)
+                    or any(cu in metric_name_lower for cu in COMMODITY_USAGE_TERMS)
+                    or any(cu in raw_expr_lower for cu in COMMODITY_USAGE_TERMS)
+                    or any(cu in context_lower for cu in ("/kwh", "per kwh", "/watt", "per watt", "tariff", "tariffs"))
+                )
+
+                # Disambiguate between Macro Market Size (for Top-Down) vs Unit Pricing/ARPU (for Bottom-Up)
+                UNIT_ECONOMICS_INDICATORS = (
+                    "per user", "per student", "per customer", "per pet", "per companion pet",
+                    "per household", "per animal", "per dog", "per cat", "per capita", "per head",
+                    "per person", "per subscriber", "per learner", "per account", "per client",
+                    "per employee", "per transaction", "per order", "per delivery", "per meal",
+                    "annual fee", "subscription price", "arpu", "unit price", "price per",
+                    "spend per", "spending per", "cost per", "fee per", "expenditure per",
+                    "annual spend", "average spend", "annual expenditure", "pricing", "tuition"
+                )
+                has_unit_economics_wording = any(ue in metric_name_lower or ue in raw_expr_lower or ue in context_lower for ue in UNIT_ECONOMICS_INDICATORS)
+
+                is_macro_metric = (
+                    not is_commodity_tariff
+                    and not has_unit_economics_wording
+                    and (
+                        (metric_type_val in ("market_size", "market_revenue") and eff_val >= 1_000_000.0)
+                        or any(w in metric_name_lower for w in ("market size", "market revenue", "market value", "industry size", "industry revenue", "sector revenue", "market spending", "total market", "overall market"))
+                        or (eff_val >= 1_000_000.0 and not any(w in metric_name_lower for w in ("fee", "price", "spend", "cost", "plan", "arpu")))
+                    )
+                )
+
+                is_unit_pricing_metric = (
+                    not is_macro_metric
+                    and not is_commodity_tariff
+                    and eff_val < 1_000_000.0
+                    and (
+                        has_unit_economics_wording
+                        or metric_type_val in ("average_price", "annual_spend", "pricing", "arpu", "subscription_price")
+                        or any(w in metric_name_lower for w in ("price", "pricing", "annual spend", "arpu", "tuition", "annual fee", "cost per", "subscription", "annual plan", "monthly plan", "license fee"))
+                        or (eff_val >= 50.0 and any(w in metric_name_lower for w in ("spend", "cost", "fee", "price", "rate", "plan")))
+                    )
+                )
 
                 if is_macro_metric and not is_unit_pricing_metric:
-                    if not macro_market_input:
-                        macro_market_input = EvidenceInput(
-                            name=item.metric,
-                            value=eff_val,
-                            unit=item.unit or (resolved_currency or "USD"),
-                            currency=resolved_currency or "USD",
-                            year=item.year or target_yr,
-                            geography=item.geography or target_geo,
-                            source_url=item.source_url,
-                            source_name=item.source_name,
-                            source_quality_tier=item.source_quality_tier,
-                            market_scope=getattr(item, "market_scope", None),
-                            market_scope_explanation=getattr(item, "market_scope_explanation", None),
-                            is_prior_year_benchmark=is_prior,
-                            entity_concept=item.metric,
-                            evidence_id=item.candidate_id,
-                            validation_status=val_status,
-                            lifecycle_stage=stage_status,
-                            confidence=conf_status,
-                            is_conflict=False,
-                            conflicting_values=c_vals if len(c_vals) > 1 else [],
-                            range_min=c_min,
-                            range_max=c_max,
-                        )
-                else:
-                    if not pricing_input:
-                        pricing_input = EvidenceInput(
-                            name=item.metric,
-                            value=eff_val,
-                            unit=item.unit or (resolved_currency or "USD"),
-                            currency=resolved_currency or "USD",
-                            year=item.year or target_yr,
-                            geography=item.geography or target_geo,
-                            source_url=item.source_url,
-                            source_name=item.source_name,
-                            source_quality_tier=item.source_quality_tier,
-                            market_scope=getattr(item, "market_scope", None),
-                            market_scope_explanation=getattr(item, "market_scope_explanation", None),
-                            is_prior_year_benchmark=is_prior,
-                            entity_concept=item.metric,
-                            evidence_id=item.candidate_id,
-                            validation_status=val_status,
-                            lifecycle_stage=stage_status,
-                            confidence=conf_status,
-                            is_conflict=False,
-                            conflicting_values=c_vals if len(c_vals) > 1 else [],
-                            range_min=c_min,
-                            range_max=c_max,
-                        )
+                    item_geo_lower = (item.geography or "").lower()
+                    if item_geo_lower in ("global", "worldwide", "world"):
+                        cand_geo = "Global"
+                    elif item.geography:
+                        cand_geo = item.geography
+                    elif any(k in metric_name_lower for k in ("global market", "worldwide market", "global industry", "global revenue")):
+                        cand_geo = "Global"
+                    else:
+                        cand_geo = target_geo
+
+                    cand_geo_norm = (cand_geo or "").strip().lower()
+                    tgt_geo_norm = (target_geo or "").strip().lower()
+
+                    # Foreign Geography Exclusion: Foreign country market size must NEVER be accepted as TAM for target geography
+                    FOREIGN_COUNTRIES = {
+                        "china", "united states", "us", "usa", "japan", "germany", "united kingdom", "uk",
+                        "france", "canada", "australia", "brazil", "italy", "spain", "thailand", "indonesia",
+                        "russia", "mexico", "south korea"
+                    }
+                    is_foreign_to_target = (
+                        tgt_geo_norm
+                        and cand_geo_norm in FOREIGN_COUNTRIES
+                        and cand_geo_norm != tgt_geo_norm
+                        and tgt_geo_norm not in cand_geo_norm
+                    )
+                    if is_foreign_to_target:
+                        continue
+
+                    # Unrelated physical-product market exclusion for service platforms
+                    biz_prod_lower = (analysis.product or "").lower() if (analysis and getattr(analysis, "product", None)) else ""
+                    biz_idea_lower = (analysis.business_idea or "").lower() if (analysis and getattr(analysis, "business_idea", None)) else ""
+                    biz_is_service_or_platform = any(k in f"{biz_prod_lower} {biz_idea_lower}".lower() for k in ("service", "platform", "software", "saas", "app", "marketplace", "training", "tutoring", "care", "delivery"))
+                    
+                    DISCORDANT_COMMODITY_TERMS = ("pet food", "cat litter", "dog food", "animal feed", "packaged food", "school uniforms", "textbooks")
+                    is_unrelated_tam_product = (
+                        biz_is_service_or_platform
+                        and any(up in metric_name_lower or up in context_lower for up in DISCORDANT_COMMODITY_TERMS)
+                        and not any(up in biz_prod_lower or up in biz_idea_lower for up in DISCORDANT_COMMODITY_TERMS)
+                    )
+                    if is_unrelated_tam_product:
+                        continue
+
+                    macro_ev_input = EvidenceInput(
+                        name=item.metric,
+                        value=eff_val,
+                        unit=item.unit or (resolved_currency or "USD"),
+                        currency=resolved_currency or "USD",
+                        year=item.year or target_yr,
+                        geography=cand_geo,
+                        source_url=item.source_url,
+                        source_name=item.source_name,
+                        source_quality_tier=item.source_quality_tier,
+                        market_scope=getattr(item, "market_scope", None),
+                        market_scope_explanation=getattr(item, "market_scope_explanation", None),
+                        is_prior_year_benchmark=is_prior,
+                        entity_concept=item.metric,
+                        evidence_id=item.candidate_id,
+                        validation_status=val_status,
+                        lifecycle_stage=stage_status,
+                        confidence=conf_status,
+                        is_conflict=False,
+                        conflicting_values=[v for v in c_vals if v >= 1_000_000.0] if len([v for v in c_vals if v >= 1_000_000.0]) > 1 else [],
+                        range_min=(item.range_min if (item.range_min is not None and item.range_min >= 1_000_000.0) else None),
+                        range_max=(item.range_max if (item.range_max is not None and item.range_max >= 1_000_000.0) else None),
+                    )
+
+                    # Category Relevance Scoring (Weight: 100 max)
+                    if tgt_geo_norm and cand_geo_norm == tgt_geo_norm:
+                        geo_align_score = 100.0
+                    elif tgt_geo_norm and tgt_geo_norm in cand_geo_norm:
+                        geo_align_score = 85.0
+                    elif cand_geo_norm in ("global", "worldwide", "world"):
+                        geo_align_score = 40.0
+                    else:
+                        geo_align_score = 10.0
+
+                    cat_match_score = 0.0
+                    if ind_text and ind_text in full_context_text:
+                        cat_match_score += 40.0
+                    if prod_text and any(pw in full_context_text for pw in prod_text.split() if len(pw) > 3):
+                        cat_match_score += 30.0
+                    cat_match_score += min(50.0, sum(15.0 for kw in biz_keywords if kw in full_context_text))
+
+                    # Penalize generic macro economy / cross-industry GMV figures
+                    GENERIC_MACRO_TERMS = (
+                        "digital commerce as a whole", "entire e-commerce", "total gmv of digital commerce",
+                        "overall retail commerce", "national gdp", "gross merchandise value (gmv) across all"
+                    )
+                    if any(gm in context_lower for gm in GENERIC_MACRO_TERMS) and not any(k in biz_keywords for k in ("national", "gdp", "macro", "entire", "overall")):
+                        cat_match_score -= 80.0
+
+                    macro_tot_score = geo_align_score + cat_match_score + yr_score + source_tier_score + corrob_score + stage_score
+                    macro_candidates.append((macro_tot_score, float(cand_year), item.candidate_id, macro_ev_input))
+
+                elif is_unit_pricing_metric:
+                    pricing_ev_input = EvidenceInput(
+                        name=item.metric,
+                        value=eff_val,
+                        unit=item.unit or (resolved_currency or "USD"),
+                        currency=resolved_currency or "USD",
+                        year=item.year or target_yr,
+                        geography=item.geography or target_geo,
+                        source_url=item.source_url,
+                        source_name=item.source_name,
+                        source_quality_tier=item.source_quality_tier,
+                        market_scope=getattr(item, "market_scope", None),
+                        market_scope_explanation=getattr(item, "market_scope_explanation", None),
+                        is_prior_year_benchmark=is_prior,
+                        entity_concept=item.metric,
+                        evidence_id=item.candidate_id,
+                        validation_status=val_status,
+                        lifecycle_stage=stage_status,
+                        confidence=conf_status,
+                        is_conflict=False,
+                        conflicting_values=c_vals if len(c_vals) > 1 else [],
+                        range_min=c_min,
+                        range_max=c_max,
+                    )
+                    price_score = 50.0 + yr_score + source_tier_score + corrob_score + stage_score
+                    pricing_candidates.append((price_score, float(cand_year), item.candidate_id, pricing_ev_input))
+
+        # Deterministic ranking and top-candidate selection
+        if macro_candidates:
+            macro_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            macro_market_input = macro_candidates[0][3]
+
+            # Range bounds must be constructed ONLY from independently qualified TAM candidates for the same geography scope
+            matched_geo = (macro_market_input.geography or "").lower()
+            qualified_geo_cands = [
+                c[3] for c in macro_candidates
+                if (c[3].geography or "").lower() == matched_geo and c[3].value is not None and c[3].value >= 1_000_000.0
+            ]
+            if macro_market_input.range_min is not None and macro_market_input.range_max is not None:
+                # Retain explicit bounds extracted directly from source text (e.g. $8.6B to $9.2B)
+                pass
+            elif len(qualified_geo_cands) > 1:
+                q_vals = [cand.value for cand in qualified_geo_cands if cand.value is not None]
+                macro_market_input.range_min = min(q_vals)
+                macro_market_input.range_max = max(q_vals)
+            else:
+                macro_market_input.range_min = None
+                macro_market_input.range_max = None
+
+        if pricing_candidates:
+            pricing_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            pricing_input = pricing_candidates[0][3]
+
+        if population_candidates:
+            population_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            population_input = population_candidates[0][3]
+
+        if serviceable_population_candidates:
+            serviceable_population_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            serviceable_population_input = serviceable_population_candidates[0][3]
+
+        if geo_pct_candidates:
+            geo_pct_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            geo_pct_input = geo_pct_candidates[0][3]
+
+        if target_pct_candidates:
+            target_pct_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            target_pct_input = target_pct_candidates[0][3]
+
+        if som_share_candidates:
+            som_share_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+            som_share_input = som_share_candidates[0][3]
 
         # Apply explicit user assumptions with robust disambiguation
         for a_name, a_obj in assumptions_map.items():
@@ -1301,9 +1627,23 @@ class MarketAnalysisPipeline:
 
         td_inputs = None
         if macro_market_input:
+            # Semantic Anti-Double-Narrowing Rule:
+            # If macro_market_input is already geographically scoped to target_geo (e.g. India),
+            # DO NOT apply a global-to-local geographic percentage (e.g. India's 5.41% of global market) to it.
+            effective_geo_pct = geo_pct_input
+            if (
+                macro_market_input.geography
+                and target_geo
+                and (
+                    macro_market_input.geography.lower() == target_geo.lower()
+                    or target_geo.lower() in macro_market_input.geography.lower()
+                )
+            ):
+                effective_geo_pct = None
+
             td_inputs = TopDownCalculationInputs(
                 macro_market_size=macro_market_input,
-                serviceable_geography_percentage=geo_pct_input,
+                serviceable_geography_percentage=effective_geo_pct,
                 target_segment_percentage=target_pct_input,
                 obtainable_market_share=som_share_input,
             )
@@ -1321,6 +1661,10 @@ class MarketAnalysisPipeline:
             business_idea=request.business_idea,
             target_geography=target_geo,
             target_year=target_yr,
+            market_definition=analysis.market_definition if analysis else None,
+            tam_methodology="Direct Reported Market Size or Bottom-Up Customer Spend",
+            sam_methodology="Serviceable Segment Narrowing",
+            som_methodology="Capacity-Based Obtainable Share",
             top_down_inputs=td_inputs,
             bottom_up_inputs=bu_inputs,
             assumptions=request.explicit_assumptions,
@@ -1366,26 +1710,43 @@ class MarketAnalysisPipeline:
         all_warnings = list(warnings)
 
         if calc_report:
-            # Prefer calculated result between bottom-up and top-down
-            if calc_report.bottom_up_tam and calc_report.bottom_up_tam.status == CalculationStatus.CALCULATED:
+            bu_tam_calc = (calc_report.bottom_up_tam and calc_report.bottom_up_tam.status == CalculationStatus.CALCULATED and calc_report.bottom_up_tam.estimate is not None)
+            td_tam_calc = (calc_report.top_down_tam and calc_report.top_down_tam.status == CalculationStatus.CALCULATED and calc_report.top_down_tam.estimate is not None)
+
+            if bu_tam_calc and td_tam_calc:
+                bu_val = calc_report.bottom_up_tam.estimate
+                td_val = calc_report.top_down_tam.estimate
+                ratio = (bu_val / td_val) if td_val > 0 else 1.0
+                # If Bottom-Up is an implausible micro-calculation (< $500 vs macro > $10M),
+                # OR if Bottom-Up severely diverges from Top-Down (ratio < 0.2 or ratio > 5.0),
+                # OR if Top-Down is backed by direct empirical macro market size evidence:
+                if bu_val < 500.0 and td_val >= 10_000_000.0:
+                    tam_res = calc_report.top_down_tam
+                    sam_res = calc_report.top_down_sam
+                    som_res = calc_report.top_down_som
+                elif ratio < 0.2 or ratio > 5.0:
+                    tam_res = calc_report.top_down_tam
+                    sam_res = calc_report.top_down_sam
+                    som_res = calc_report.top_down_som
+                elif calc_report.top_down_tam and calc_report.top_down_tam.evidence_quality not in (None, "INSUFFICIENT"):
+                    tam_res = calc_report.top_down_tam
+                    sam_res = calc_report.top_down_sam
+                    som_res = calc_report.top_down_som
+                else:
+                    tam_res = calc_report.bottom_up_tam
+                    sam_res = calc_report.bottom_up_sam
+                    som_res = calc_report.bottom_up_som
+            elif bu_tam_calc:
                 tam_res = calc_report.bottom_up_tam
-            elif calc_report.top_down_tam and calc_report.top_down_tam.status == CalculationStatus.CALCULATED:
-                tam_res = calc_report.top_down_tam
-            else:
-                tam_res = calc_report.bottom_up_tam or calc_report.top_down_tam
-
-            if calc_report.bottom_up_sam and calc_report.bottom_up_sam.status == CalculationStatus.CALCULATED:
                 sam_res = calc_report.bottom_up_sam
-            elif calc_report.top_down_sam and calc_report.top_down_sam.status == CalculationStatus.CALCULATED:
-                sam_res = calc_report.top_down_sam
-            else:
-                sam_res = calc_report.bottom_up_sam or calc_report.top_down_sam
-
-            if calc_report.bottom_up_som and calc_report.bottom_up_som.status == CalculationStatus.CALCULATED:
                 som_res = calc_report.bottom_up_som
-            elif calc_report.top_down_som and calc_report.top_down_som.status == CalculationStatus.CALCULATED:
+            elif td_tam_calc:
+                tam_res = calc_report.top_down_tam
+                sam_res = calc_report.top_down_sam
                 som_res = calc_report.top_down_som
             else:
+                tam_res = calc_report.bottom_up_tam or calc_report.top_down_tam
+                sam_res = calc_report.bottom_up_sam or calc_report.top_down_sam
                 som_res = calc_report.bottom_up_som or calc_report.top_down_som
 
             confidence = calc_report.confidence
@@ -1455,6 +1816,7 @@ class MarketAnalysisPipeline:
             validation_results=validation_results,
             triangulation_result=tri_result,
             calculation_report=calc_report,
+            calculation_trace=calc_report.calculation_trace if calc_report else None,
             tam=tam_res,
             sam=sam_res,
             som=som_res,

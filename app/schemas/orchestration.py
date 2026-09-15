@@ -9,6 +9,7 @@ from app.schemas.business import BusinessAnalysis, CompetitorInfo
 from app.schemas.calculation import (
     CalculationAssumption,
     CalculationReport,
+    CalculationTrace,
     SAMResult,
     SOMResult,
     TAMResult,
@@ -280,6 +281,10 @@ class OrchestrationResult(BaseModel):
     som: Optional[SOMResult] = Field(
         default=None,
         description="Serviceable Obtainable Market result summary.",
+    )
+    calculation_trace: Optional[CalculationTrace] = Field(
+        default=None,
+        description="Deterministic evidence calculation trace for auditing.",
     )
     confidence: str = Field(
         default=EvidenceConfidence.LOW,

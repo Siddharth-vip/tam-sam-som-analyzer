@@ -17,6 +17,7 @@ from app.schemas.calculation import (
     CalculationReport,
     CalculationStatus,
     CalculationStep,
+    CalculationTrace,
     DivergenceSeverity,
     EvidenceInput,
     EvidenceQualityRating,
@@ -26,10 +27,13 @@ from app.schemas.calculation import (
     PriceFrequency,
     ReliabilityAssessment,
     SAMResult,
+    SAMTrace,
     SOMResult,
+    SOMTrace,
     ScenarioEstimate,
     SensitivityParameter,
     TAMResult,
+    TAMTrace,
     TopDownCalculationInputs,
     UncertaintyAnalysis,
     UncertaintyInterval,
@@ -445,6 +449,13 @@ class CalculationService:
                 message="Insufficient evidence: No serviceable market narrowing factors (e.g. serviceable geography or target segment percentages) were provided to derive SAM from TAM.",
             )
 
+        # Invariant enforcement: 0 <= SAM <= TAM
+        if tam_result.estimate is not None and current_val > tam_result.estimate:
+            current_val = tam_result.estimate
+            warnings.append(f"SAM was clamped to not exceed TAM ({tam_result.estimate:,.0f}).")
+        if current_val < 0.0:
+            current_val = 0.0
+
         interval = UncertaintyInterval(lower=current_low, point=current_val, upper=current_high)
         confidence = self._evaluate_confidence(narrowing_factors, base_confidence=tam_result.confidence)
         eq_rating, eq_reasons = self._evaluate_result_evidence_quality(
@@ -524,6 +535,13 @@ class CalculationService:
         som_val = sam_val * share_ratio
         som_low = sam_low * share_low
         som_high = sam_high * share_high
+
+        # Invariant enforcement: 0 <= SOM <= SAM
+        if sam_result.estimate is not None and som_val > sam_result.estimate:
+            som_val = sam_result.estimate
+            warnings.append(f"SOM was clamped to not exceed SAM ({sam_result.estimate:,.0f}).")
+        if som_val < 0.0:
+            som_val = 0.0
 
         if share_input.is_assumption:
             assumptions.append(
@@ -1992,16 +2010,128 @@ class CalculationService:
             if "unit mismatch" in w.lower() or "currency divergence" in w.lower() or "entity unit" in w.lower():
                 unit_compat_warnings.append(w)
 
+        # Build deterministic calculation trace for auditing & debugging
+        tam_trace = None
+        sam_trace = None
+        som_trace = None
+
+        if td_tam and td_tam.status == CalculationStatus.CALCULATED and td_tam.estimate is not None:
+            macro_input = request.top_down_inputs.macro_market_size if request.top_down_inputs else None
+            tam_trace = TAMTrace(
+                candidate_id=macro_input.evidence_id if macro_input else None,
+                value=td_tam.estimate,
+                geography=td_tam.geography,
+                year=td_tam.year,
+                source=macro_input.source_url if (macro_input and macro_input.source_url) else (td_tam.steps[0].evidence_references[0] if td_tam.steps and td_tam.steps[0].evidence_references else None),
+            )
+        elif bu_tam and bu_tam.status == CalculationStatus.CALCULATED and bu_tam.estimate is not None:
+            pop_input = request.bottom_up_inputs.potential_customers if request.bottom_up_inputs else None
+            tam_trace = TAMTrace(
+                candidate_id=pop_input.evidence_id if pop_input else None,
+                value=bu_tam.estimate,
+                geography=bu_tam.geography,
+                year=bu_tam.year,
+                source=pop_input.source_url if (pop_input and pop_input.source_url) else None,
+            )
+
+        if td_sam and td_sam.status == CalculationStatus.CALCULATED and td_sam.estimate is not None:
+            td_inp = request.top_down_inputs
+            factor_item = (
+                td_inp.serviceable_geography_percentage
+                or td_inp.target_segment_percentage
+                or (td_inp.other_filters[0] if getattr(td_inp, "other_filters", None) else None)
+            )
+            factor_type = "geography" if td_inp.serviceable_geography_percentage else ("segment" if td_inp.target_segment_percentage else "filter")
+            formula_str = td_sam.steps[-1].formula if td_sam.steps else None
+            sam_trace = SAMTrace(
+                candidate_id=factor_item.evidence_id if factor_item else None,
+                factor=factor_item.value if factor_item else None,
+                factor_type=factor_type if factor_item else None,
+                reason="Direct narrowing factor from evidence",
+                formula=formula_str,
+                value=td_sam.estimate,
+            )
+        elif td_sam:
+            sam_trace = SAMTrace(
+                candidate_id=None,
+                factor=None,
+                factor_type=None,
+                reason=td_sam.message,
+                formula=None,
+                value=None,
+            )
+
+        if td_som and td_som.status == CalculationStatus.CALCULATED and td_som.estimate is not None:
+            som_input = request.top_down_inputs.obtainable_market_share if request.top_down_inputs else None
+            som_trace = SOMTrace(
+                candidate_id=som_input.evidence_id if som_input else None,
+                factor=som_input.value if som_input else None,
+                reason="Obtainable market share from evidence",
+                value=td_som.estimate,
+            )
+        elif td_som:
+            som_trace = SOMTrace(
+                candidate_id=None,
+                factor=None,
+                reason=td_som.message,
+                value=None,
+            )
+        else:
+            som_trace = SOMTrace(
+                candidate_id=None,
+                factor=None,
+                reason="Insufficient evidence: SOM safety rule strictly forbids arbitrary market share percentages. Obtainable market share evidence or an explicit user assumption is required to calculate SOM.",
+                value=None,
+            )
+
         currency = (
             (td_tam.currency if td_tam and td_tam.currency else None)
             or (bu_tam.currency if bu_tam and bu_tam.currency else None)
         )
+
+        calc_trace = CalculationTrace(
+            tam=tam_trace,
+            sam=sam_trace,
+            som=som_trace,
+        )
+
+        # Determine methodologies dynamically if not explicitly specified
+        tam_meth = request.tam_methodology
+        if not tam_meth:
+            if td_tam and td_tam.status == CalculationStatus.CALCULATED and bu_tam and bu_tam.status == CalculationStatus.CALCULATED:
+                tam_meth = "Triangulated (Top-Down Direct Market Size & Bottom-Up Customer Unit Economics)"
+            elif td_tam and td_tam.status == CalculationStatus.CALCULATED:
+                tam_meth = "Top-Down (Direct Reported Relevant Market Size)"
+            elif bu_tam and bu_tam.status == CalculationStatus.CALCULATED:
+                tam_meth = "Bottom-Up (Relevant Customer Population × Annual Spend/ARPU)"
+            else:
+                tam_meth = "Direct Market Sizing or Customer Unit Economics"
+
+        sam_meth = request.sam_methodology
+        if not sam_meth:
+            if td_sam and td_sam.status == CalculationStatus.CALCULATED:
+                sam_meth = "Serviceable Segment Narrowing (TAM × Serviceable Geography/Customer Segment %)"
+            elif bu_sam and bu_sam.status == CalculationStatus.CALCULATED:
+                sam_meth = "Serviceable Customer Economics (Serviceable Population × Annual Spend)"
+            else:
+                sam_meth = "Serviceable Segment Narrowing or Serviceable Population Spend"
+
+        som_meth = request.som_methodology
+        if not som_meth:
+            if (td_som and td_som.status == CalculationStatus.CALCULATED) or (bu_som and bu_som.status == CalculationStatus.CALCULATED):
+                som_meth = "Capacity-Based & Obtainable Market Share"
+            else:
+                som_meth = "Operational/Sales Capacity or Realistic Near-Term Obtainable Share"
 
         return CalculationReport(
             calculation_id=calc_id,
             status=overall_status,
             target_geography=request.target_geography,
             target_year=request.target_year,
+            market_definition=request.market_definition,
+            tam_methodology=tam_meth,
+            sam_methodology=sam_meth,
+            som_methodology=som_meth,
             currency=currency,
             top_down_tam=td_tam,
             top_down_sam=td_sam,
@@ -2023,6 +2153,7 @@ class CalculationService:
             warnings=list(dict.fromkeys(all_warnings)),
             unit_compatibility_warnings=list(dict.fromkeys(unit_compat_warnings)),
             message=self._build_report_message(overall_status, td_tam, bu_tam, comparison),
+            calculation_trace=calc_trace,
         )
 
     # -----------------------------------------------------------------------

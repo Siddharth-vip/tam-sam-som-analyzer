@@ -26,6 +26,33 @@ class ExtractionMethod(str, Enum):
     HYBRID = "hybrid"
 
 
+class SemanticCandidateType(str, Enum):
+    """Fine-grained semantic classification of extracted evidence candidate values."""
+
+    MACRO_MARKET_SIZE = "macro_market_size"
+    SEGMENT_MARKET_SIZE = "segment_market_size"
+    COUNTRY_MARKET_SIZE = "country_market_size"
+    REGIONAL_MARKET_SIZE = "regional_market_size"
+    CUSTOMER_COUNT = "customer_count"
+    ANNUAL_SPEND = "annual_spend"
+    AVERAGE_PRICE = "average_price"
+    SUBSCRIPTION_PRICE = "subscription_price"
+    AVERAGE_ORDER_VALUE = "average_order_value"
+    TRANSACTION_VALUE = "transaction_value"
+    PER_USER_REVENUE = "per_user_revenue"
+    PER_CUSTOMER_SPEND = "per_customer_spend"
+    PER_UNIT_PRICE = "per_unit_price"
+    COMPANY_REVENUE = "company_revenue"
+    INVESTMENT_AMOUNT = "investment_amount"
+    FUNDING_AMOUNT = "funding_amount"
+    GROWTH_VALUE = "growth_value"
+    FOREIGN_MARKET_SIZE = "foreign_market_size"
+    DEMOGRAPHIC_STATISTIC = "demographic_statistic"
+    PROMOTIONAL_DISCOUNT = "promotional_discount"
+    CAGR_OR_GROWTH = "cagr_or_growth"
+    UNKNOWN = "unknown"
+
+
 class MarketMetricType(str, Enum):
     """Explicit taxonomy of recognized market research and TAM/SAM/SOM metric categories."""
 
@@ -40,6 +67,12 @@ class MarketMetricType(str, Enum):
     ANNUAL_SPEND = "annual_spend"
     AVERAGE_PRICE = "average_price"
     SUBSCRIPTION_PRICE = "subscription_price"
+    AVERAGE_ORDER_VALUE = "average_order_value"
+    TRANSACTION_VALUE = "transaction_value"
+    PER_USER_REVENUE = "per_user_revenue"
+    COMPANY_REVENUE = "company_revenue"
+    FUNDING_AMOUNT = "funding_amount"
+    FOREIGN_MARKET_SIZE = "foreign_market_size"
     MARKET_SHARE = "market_share"
     GROWTH_RATE = "growth_rate"
     CAGR = "cagr"
@@ -65,6 +98,10 @@ class ExtractedEvidenceCandidate(BaseModel):
     metric_type: Optional[MarketMetricType] = Field(
         default=None,
         description="Classified market metric category from the supported taxonomy.",
+    )
+    semantic_candidate_type: Optional[SemanticCandidateType] = Field(
+        default=None,
+        description="Fine-grained semantic classification of candidate (macro market, unit price, ARPU, funding, etc.).",
     )
     value: Optional[float] = Field(
         default=None,

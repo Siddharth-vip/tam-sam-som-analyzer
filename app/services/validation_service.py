@@ -129,7 +129,7 @@ class EvidenceValidationService:
         "download", "downloads", "transaction", "transactions", "license", "licenses",
         "seat", "seats", "device", "devices", "vehicle", "vehicles", "course", "courses",
         "enrollment", "enrollments", "registration", "registrations",
-        "station", "stations", "charger", "chargers", "port", "ports", "point", "points", "outlet", "outlets",
+        "station", "stations", "charger", "chargers", "point", "points", "outlet", "outlets",
         "ev", "evs", "car", "cars", "automobile", "automobiles", "fleet", "fleets",
         "two-wheeler", "two-wheelers", "three-wheeler", "three-wheelers", "bus", "buses", "truck", "trucks",
         "cab", "cabs", "taxi", "taxis", "ride", "rides", "trip", "trips", "session", "sessions",
@@ -158,7 +158,7 @@ class EvidenceValidationService:
         "company", "developer", "school", "college", "market size", "revenue",
         "spend", "expenditure", "price", "count", "subscriber", "transaction",
         "cost", "adoption", "professional", "learner", "employee", "customer",
-        "station", "charger", "vehicle", "car", "fleet", "unit", "device", "port", "outlet"
+        "station", "charger", "vehicle", "car", "fleet", "unit", "device", "outlet"
     }
 
     # -----------------------------------------------------------------------
@@ -1045,12 +1045,13 @@ class EvidenceValidationService:
             norm_metric = self.normalize_metric(cand.metric)
             norm_unit = self.normalize_unit(cand.unit)
             norm_geo = self.normalize_geography(cand.geography)
+            norm_mtype = cand.metric_type.value if hasattr(cand.metric_type, "value") else str(cand.metric_type or "")
             norm_val = round(cand.value, 4) if cand.value is not None else None
             norm_min = round(cand.range_min, 4) if cand.range_min is not None else None
             norm_max = round(cand.range_max, 4) if cand.range_max is not None else None
 
-            # Deduplication key strictly binds metric, unit, geography, year, and value
-            group_key = f"{norm_metric}|{norm_geo}|{cand.year}|{norm_unit}|{norm_val}|{norm_min}|{norm_max}"
+            # Deduplication key strictly binds metric, metric_type, unit, geography, year, and value
+            group_key = f"{norm_metric}|{norm_mtype}|{norm_geo}|{cand.year}|{norm_unit}|{norm_val}|{norm_min}|{norm_max}"
 
             if group_key not in groups_map:
                 # Deterministic stable group ID
@@ -1089,14 +1090,21 @@ class EvidenceValidationService:
 
         but report materially different values.
         """
-        # Cluster groups by subject entity: (norm_metric, norm_geo, year, norm_unit)
+        # Cluster groups by subject entity: (norm_metric, norm_mtype, norm_geo, year, norm_unit, scale_bucket)
         subject_map: Dict[str, List[DeduplicationGroup]] = {}
 
         for group in deduplication_groups:
+            first_c = group.candidates[0] if group.candidates else None
+            norm_mtype = (first_c.metric_type.value if hasattr(first_c.metric_type, "value") else str(first_c.metric_type or "")) if first_c else ""
             norm_metric = self.normalize_metric(group.canonical_metric)
             norm_geo = self.normalize_geography(group.canonical_geography)
             norm_unit = self.normalize_unit(group.canonical_unit)
-            subject_key = f"{norm_metric}|{norm_geo}|{group.canonical_year}|{norm_unit}"
+            
+            # Scale bucket prevents unit-level spend ($29.5) from conflicting with macro market ($14.8B)
+            eff_v = group.canonical_value if group.canonical_value is not None else (group.candidates[0].range_min if group.candidates else None)
+            scale_bucket = "macro" if (eff_v is not None and eff_v >= 1_000_000.0) else "micro"
+            
+            subject_key = f"{norm_metric}|{norm_mtype}|{norm_geo}|{group.canonical_year}|{norm_unit}|{scale_bucket}"
             subject_map.setdefault(subject_key, []).append(group)
 
         conflict_groups: List[ConflictGroup] = []

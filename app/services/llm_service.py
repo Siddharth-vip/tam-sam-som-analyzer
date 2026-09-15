@@ -11,46 +11,113 @@ from app.schemas.business import BusinessAnalysis
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are an expert business concept and market research analysis assistant.
-Your task is to extract structured business attributes from the user's business idea into the requested JSON schema with high factual precision.
+Your task is to extract structured business attributes from the user's business idea into the requested JSON schema with high factual precision and domain-agnostic flexibility.
 
 Extraction Guidelines:
 1. PRODUCT:
-   - Extract the meaningful product, platform, or service name/concept from the text (e.g., 'Affordable online programming platform', 'Healthy meal delivery service', 'SaaS accounting platform').
+   - Extract the meaningful product, platform, or service name/concept from the text (e.g., 'Affordable online programming platform', 'Healthy meal delivery service', 'Predictive maintenance SaaS for factories', 'Remote physiotherapy platform').
    - Do NOT reduce the product to a generic word like 'app' or 'platform' when specific descriptors are in the input.
 
-2. TARGET CUSTOMER:
-   - Extract explicit target users, demographics, or customer segments explicitly mentioned in the text (e.g., 'for college students in India' -> 'College students', 'for urban families in Chennai' -> 'Urban families', 'for small businesses' -> 'Small businesses').
-   - If no target customer or audience is stated, return null.
+2. TARGET CUSTOMER & CUSTOMER SEGMENT:
+   - target_customer: Extract explicit target users, demographics, or customer segments (e.g., 'College students', 'Factory managers', 'Elderly patients', 'Small businesses').
+   - target_customer_segment: More granular target persona/segment if specified (e.g., 'Working professionals in Tier-2 Indian cities', 'Medium-sized manufacturing plants').
+   - customer_type: Classify as 'B2B', 'B2C', 'B2B2C', 'Enterprise', 'SMB', or 'Consumers'.
 
 3. GEOGRAPHY:
-   - Extract explicit geographical regions, countries, or cities mentioned in the text (e.g., 'in India' -> 'India', 'in Chennai' -> 'Chennai', 'in North America' -> 'North America').
+   - Extract explicit geographical regions, countries, or cities mentioned in the text (e.g., 'India', 'Chennai', 'Europe', 'North America').
    - If NO geographic location is stated in the input, return null. NEVER guess or invent geography.
 
-4. INDUSTRY:
-   - Semantically infer and classify the primary industry, sector, or market domain based on the product and concept (e.g., 'online programming platform' -> 'EdTech / Online Education / Software Training', 'healthy meal delivery' -> 'Food Delivery / Food Service', 'accounting SaaS' -> 'Accounting Software / FinTech').
-   - If the domain is completely ambiguous, return null.
+4. SECTOR & INDUSTRY:
+   - sector: Broad macro sector (e.g., 'Technology / Software', 'Healthcare', 'Energy / CleanTech', 'Food / Agriculture', 'Financial Services', 'Manufacturing / Industrial', 'Education / Training', 'Logistics / Supply Chain').
+   - industry: Specific industry or market domain (e.g., 'Industrial IoT / Predictive Maintenance', 'Telehealth / Physical Therapy', 'Quick Commerce / Food Delivery', 'EdTech / Online Education').
 
-5. BUSINESS MODEL:
-   - Extract or high-confidence classify the business model (e.g., 'B2C' for consumer or student applications, 'B2B' for enterprise or business tools, 'Subscription' for subscription services, 'B2B2C', 'Marketplace', 'SaaS').
-   - If completely ambiguous, return null.
+5. BUSINESS MODEL & REVENUE MODEL:
+   - business_model: High-confidence classification (e.g., 'B2B SaaS', 'B2C Marketplace', 'On-Demand Delivery', 'Direct-to-Consumer', 'Service Platform').
+   - revenue_model: Monetization mechanism if stated or evident (e.g., 'Recurring Subscription', 'Transaction Fee / Commission', 'Usage-based', 'One-time License').
 
-6. PRICING MODEL:
-   - Extract ONLY when explicit pricing or monetization mechanisms are stated in the text (e.g., 'Recurring Subscription', 'Freemium', '$10/month', 'Commission-based', 'One-time Purchase', 'Pay-per-seat').
-   - Descriptive terms like 'affordable', 'cheap', 'premium', 'luxury', or 'low-cost' describe price positioning, NOT a pricing model. Do NOT assume 'Subscription' or 'Free' merely because a product is described as 'affordable'. If no specific pricing mechanism is stated, return null.
+6. MARKET CATEGORY & MARKET DEFINITION:
+   - market_category: Standardized market category (e.g., 'Predictive Maintenance Software', 'Digital Physical Therapy Services', 'Online Grocery Delivery').
+   - market_definition: Dynamic, concise definition of the exact market this business participates in based on (Product + Customer + Business Model + Geography). For example: 'Predictive maintenance and industrial asset monitoring SaaS market for manufacturing facilities in India'.
 
-7. CUSTOMER PROBLEM:
-   - Infer a concise customer problem statement supported by the business idea wording (e.g., 'affordable online programming platform for college students' -> 'Need for accessible and affordable programming education'; 'healthy meal delivery for college students' -> 'Lack of convenient, healthy, and reliable meal options for college students').
-   - If the input lacks sufficient detail, return null.
+7. CUSTOMER PROBLEM & VALUE PROPOSITION:
+   - Infer concise, grounded problem and value proposition statements derived from the business idea.
 
-8. VALUE PROPOSITION:
-   - Infer a concise value proposition supported by the business idea wording (e.g., 'affordable online programming platform for college students' -> 'High quality affordable online coding training for college students'; 'healthy meal delivery service' -> 'Convenient and nutritious meal delivery for college students').
-   - If the input lacks sufficient detail, return null.
-
-9. EPISTEMIC RULE - UNKNOWN != ASSUMED:
+8. EPISTEMIC RULE - UNKNOWN != ASSUMED:
    - If an attribute is not present and cannot be determined with high confidence, set that field to null.
    - Do NOT invent geography, pricing, revenue, market size, competitors, customer numbers, or statistics.
    - Do NOT calculate TAM, SAM, or SOM.
    - Return only the structured JSON object complying with the schema."""
+
+
+def derive_market_strategy(analysis: BusinessAnalysis) -> "MarketStrategy":
+    """Derive dynamic, domain-agnostic MarketStrategy from structured BusinessAnalysis."""
+    from app.schemas.business import MarketStrategy
+
+    product = (analysis.product or "").strip()
+    industry = (analysis.industry or "").strip()
+    sector = (analysis.sector or "").strip()
+    biz_model = (analysis.business_model or "").strip()
+    cust_type = (analysis.customer_type or "").strip()
+    target_cust = (analysis.target_customer_segment or analysis.target_customer or "").strip()
+    geo = (analysis.geography or "").strip()
+    market_cat = (analysis.market_category or industry or product or "Target Market").strip()
+    market_def = (analysis.market_definition or f"{market_cat} market for {target_cust} in {geo}".strip()).strip()
+
+    # Determine recommended TAM method based on business model and product
+    b_lower = biz_model.lower()
+    p_lower = product.lower()
+    r_lower = (analysis.revenue_model or "").lower()
+
+    if any(k in b_lower or k in r_lower for k in ("subscription", "saas", "b2b", "membership", "license")):
+        tam_method = "direct_market_size_or_customer_spend"
+    elif any(k in b_lower or k in r_lower for k in ("marketplace", "commission", "transaction", "take rate", "delivery", "booking")):
+        tam_method = "direct_market_size_or_transaction_volume"
+    elif any(k in p_lower for k in ("hardware", "device", "equipment", "product")):
+        tam_method = "direct_market_size_or_unit_revenue"
+    else:
+        tam_method = "direct_market_size"
+
+    # Evidence requirements dynamically constructed
+    geo_str = f" in {geo}" if geo else ""
+    tam_reqs = [
+        f"Directly reported market size or aggregate annual revenue for {market_cat}{geo_str}",
+        f"Target customer population count ({target_cust or 'target customers'}{geo_str}) multiplied by annual spend/ARPU",
+        f"Total annual transactions or volume for {market_cat}{geo_str} multiplied by average transaction value",
+    ]
+    sam_reqs = [
+        f"Directly reported serviceable segment size for {market_cat} tailored to {target_cust or 'serviceable persona'}{geo_str}",
+        f"TAM multiplied by valid serviceable segment percentage (geographic scope, target persona, or service tier)",
+        f"Serviceable customer count ({target_cust or 'reachable customers'}{geo_str}) multiplied by annual revenue per customer",
+    ]
+    som_reqs = [
+        f"Realistic near-term obtainable market share based on verified operational, sales, or geographic rollout capacity",
+        f"Realistically achievable customer acquisition count in Years 1-3 multiplied by annual spend",
+        f"Realistically achievable transaction capacity multiplied by net revenue per transaction",
+    ]
+
+    # Token extraction for relevant terms
+    terms_raw = f"{product} {industry} {market_cat} {target_cust}".lower()
+    relevant_terms = [t for t in set(re.findall(r"[a-zA-Z]{3,}", terms_raw)) if t not in ("for", "the", "and", "with", "market", "service", "platform", "app")]
+
+    return MarketStrategy(
+        business_sector=sector or None,
+        industry=industry or None,
+        product_or_service=product or None,
+        business_model=biz_model or None,
+        customer_type=cust_type or None,
+        target_segment=target_cust or None,
+        market_definition=market_def or None,
+        market_category=market_cat or None,
+        tam_method=tam_method,
+        sam_method="segment_narrowing_or_customer_spend",
+        som_method="capacity_or_obtainable_share",
+        tam_evidence_requirements=tam_reqs,
+        sam_evidence_requirements=sam_reqs,
+        som_evidence_requirements=som_reqs,
+        relevant_market_terms=relevant_terms,
+        unrelated_market_terms=["unrelated physical commodities", "unrelated national GDP", "cross-industry macro GMV"],
+        segment_narrowing_dimensions=["geography", "customer_segment", "service_tier", "distribution_channel"],
+    )
 
 
 def normalize_business_analysis(data: Dict[str, Any], business_idea: str) -> Dict[str, Any]:
@@ -68,7 +135,7 @@ def normalize_business_analysis(data: Dict[str, Any], business_idea: str) -> Dic
     # 1. Product extraction fallback
     if not data.get("product"):
         prod_match = re.search(
-            r"(?:build|create|launch|start|develop|make)\s+(?:an?|the)?\s*([a-zA-Z0-9\s\-]+?)(?:\s+for\s+|\s+in\s+|\s+with\s+|\s+that\s+|\.|\,|$)",
+            r"(?:build|create|launch|start|develop|make|offer|provide)\s+(?:an?|the)?\s*([a-zA-Z0-9\s\-]+?)(?:\s+for\s+|\s+in\s+|\s+with\s+|\s+that\s+|\.|\,|$)",
             text,
             re.IGNORECASE,
         )
@@ -117,19 +184,25 @@ def normalize_business_analysis(data: Dict[str, Any], business_idea: str) -> Dic
     # 4. Industry semantic classification fallback
     if not data.get("industry"):
         if any(w in text_lower for w in ["programming", "coding", "software training", "edtech", "tutoring", "course", "education", "student learning"]):
-            data["industry"] = "EdTech / Online Education / Software Training"
-        elif any(w in text_lower for w in ["meal delivery", "healthy meal", "food delivery", "restaurant", "cloud kitchen", "catering", "dining"]):
+            data["industry"] = "EdTech / Online Education"
+        elif any(w in text_lower for w in ["meal delivery", "healthy meal", "food delivery", "restaurant", "cloud kitchen", "catering", "dining", "grocery"]):
             data["industry"] = "Food Delivery / Food Service"
         elif any(w in text_lower for w in ["accounting", "bookkeeping", "invoice", "payroll", "fintech", "banking", "tax filing"]):
             data["industry"] = "Accounting Software / FinTech"
-        elif any(w in text_lower for w in ["telemedicine", "doctor consultation", "health clinic", "fitness app", "mental health", "wellness"]):
+        elif any(w in text_lower for w in ["telemedicine", "doctor consultation", "health clinic", "fitness app", "mental health", "physiotherapy", "healthcare"]):
             data["industry"] = "Healthcare / HealthTech"
+        elif any(w in text_lower for w in ["predictive maintenance", "manufacturing", "factory", "industrial", "machinery"]):
+            data["industry"] = "Industrial IoT / Manufacturing SaaS"
+        elif any(w in text_lower for w in ["solar", "renewable", "clean energy", "cleantech", "photovoltaic"]):
+            data["industry"] = "CleanTech / Solar Energy"
         elif any(w in text_lower for w in ["real estate", "property listing", "apartment rental", "house rental", "coworking"]):
             data["industry"] = "Real Estate / PropTech"
         elif any(w in text_lower for w in ["rideshare", "taxi", "carpool", "logistics", "courier", "freight shipping"]):
             data["industry"] = "Transportation / Logistics"
         elif any(w in text_lower for w in ["e-commerce", "marketplace", "online store", "direct to consumer", "d2c"]):
             data["industry"] = "E-Commerce / Marketplace"
+        elif data.get("product"):
+            data["industry"] = f"{data['product']} Industry"
 
     # 5. Pricing model normalization: qualitative words MUST NOT become pricing models
     curr_pricing = data.get("pricing_model")
@@ -153,7 +226,6 @@ def normalize_business_analysis(data: Dict[str, Any], business_idea: str) -> Dic
         elif any(w in text_lower for w in ["pay-as-you-go", "usage-based", "pay per use"]):
             data["pricing_model"] = "Usage-based"
         else:
-            # Epistemic safety: remain None
             data["pricing_model"] = None
 
     # 6. Business model normalization
@@ -168,40 +240,70 @@ def normalize_business_analysis(data: Dict[str, Any], business_idea: str) -> Dic
             data["business_model"] = "Marketplace"
         elif "saas" in text_lower:
             data["business_model"] = "SaaS"
-        elif data.get("target_customer") in ("College students", "Students", "Urban families", "Consumers", "Parents"):
+        elif any(c in str(data.get("target_customer", "")).lower() for c in ("student", "famil", "consumer", "parent", "patient", "individual", "pet owner", "homeowner", "gig worker", "worker", "driver", "shopper", "renter", "user", "professional", "learner", "adult")):
             data["business_model"] = "B2C"
-        elif data.get("target_customer") in ("Small businesses", "SMEs", "Enterprises", "Companies"):
+        elif any(c in str(data.get("target_customer", "")).lower() for c in ("business", "sme", "smb", "enterprise", "company", "factor", "manufactur", "hospital", "clinic", "plant", "firm", "corporate", "farmer", "merchant", "supplier")):
             data["business_model"] = "B2B"
 
-    # 7. Customer problem fallback (grounded in user input)
+    # 7. Customer type normalization
+    if not data.get("customer_type"):
+        if data.get("business_model") in ("B2B", "SaaS") or any(w in text_lower for w in ["b2b", "enterprise", "business", "factor", "manufactur", "sme", "smb", "corporate", "plant", "farmer", "merchant", "supplier", "compan", "institution", "hospital", "clinic", "firm"]):
+            data["customer_type"] = "B2B"
+        elif data.get("business_model") in ("B2C", "Consumer") or any(w in text_lower for w in ["b2c", "consumer", "student", "patient", "individual", "family", "pet owner", "homeowner", "gig worker", "worker", "driver", "shopper", "renter", "professional", "learner"]):
+            data["customer_type"] = "B2C"
+        elif "b2b2c" in text_lower:
+            data["customer_type"] = "B2B2C"
+
+    # 8. Sector normalization
+    if not data.get("sector"):
+        if data.get("industry"):
+            ind = data["industry"]
+            data["sector"] = ind.split("/")[0].strip() if "/" in ind else ind
+        elif any(w in text_lower for w in ["health", "medical", "clinic", "therapy", "doctor"]):
+            data["sector"] = "Healthcare"
+        elif any(w in text_lower for w in ["software", "saas", "platform", "cloud", "ai", "tech"]):
+            data["sector"] = "Technology / Software"
+        elif any(w in text_lower for w in ["food", "grocery", "restaurant", "meal"]):
+            data["sector"] = "Food & Beverage / Retail"
+        elif any(w in text_lower for w in ["energy", "solar", "cleantech", "power"]):
+            data["sector"] = "Energy / CleanTech"
+        elif any(w in text_lower for w in ["finance", "fintech", "banking", "payment", "accounting"]):
+            data["sector"] = "Financial Services"
+        elif any(w in text_lower for w in ["education", "edtech", "tutoring", "learning", "training"]):
+            data["sector"] = "Education"
+        elif any(w in text_lower for w in ["factory", "manufacturing", "industrial", "machinery"]):
+            data["sector"] = "Manufacturing / Industrial"
+
+    # 9. Market category and definition dynamic synthesis
+    if not data.get("market_category"):
+        data["market_category"] = data.get("industry") or data.get("product") or "Target Market"
+
+    if not data.get("market_definition"):
+        prod = data.get("product") or "solution"
+        cust = data.get("target_customer_segment") or data.get("target_customer") or "target customers"
+        geo = f" in {data['geography']}" if data.get("geography") else ""
+        data["market_definition"] = f"{prod} market serving {cust}{geo}".strip()
+
+    # 10. Customer problem fallback (grounded in user input)
     if not data.get("customer_problem"):
         cust_str = f" for {data.get('target_customer')}" if data.get("target_customer") else ""
+        prod_name = data.get("product") or "services"
         if "affordable" in text_lower or "low-cost" in text_lower or "accessible" in text_lower:
-            if any(w in text_lower for w in ["programming", "coding", "software"]):
-                data["customer_problem"] = "Need for accessible and affordable programming education"
-            elif any(w in text_lower for w in ["meal", "food"]):
-                data["customer_problem"] = f"High cost or limited affordability of quality meals{cust_str}"
-            else:
-                prod_name = data.get("product") or "services"
-                data["customer_problem"] = f"High cost and limited accessibility of {prod_name.lower()}{cust_str}"
-        elif any(w in text_lower for w in ["healthy meal", "meal delivery", "healthy food"]):
-            data["customer_problem"] = f"Lack of convenient, healthy, and reliable meal options{cust_str}"
+            data["customer_problem"] = f"High cost and limited accessibility of {prod_name.lower()}{cust_str}"
+        elif any(w in text_lower for w in ["healthy meal", "meal delivery", "healthy food", "grocery"]):
+            data["customer_problem"] = f"Lack of convenient, healthy, and reliable options{cust_str}"
+        elif any(w in text_lower for w in ["predictive maintenance", "factory", "machinery", "downtime"]):
+            data["customer_problem"] = f"Unplanned equipment downtime and high maintenance costs{cust_str}"
         elif any(w in text_lower for w in ["accounting", "bookkeeping", "invoice"]):
             data["customer_problem"] = f"Complexity and time-consuming manual processes in financial management{cust_str}"
-        elif any(w in text_lower for w in ["food delivery", "food app", "online ordering"]):
-            data["customer_problem"] = f"Inconvenience and friction in ordering and receiving meals{cust_str}"
+        else:
+            data["customer_problem"] = f"Challenges and operational inefficiencies in accessing quality {prod_name.lower()}{cust_str}"
 
-    # 8. Value proposition fallback (grounded in user input)
+    # 11. Value proposition fallback (grounded in user input)
     if not data.get("value_proposition"):
         cust_str = f" for {data.get('target_customer')}" if data.get("target_customer") else ""
-        if ("affordable" in text_lower or "low-cost" in text_lower) and any(w in text_lower for w in ["programming", "coding", "software"]):
-            data["value_proposition"] = f"High quality affordable online coding training{cust_str}"
-        elif any(w in text_lower for w in ["healthy meal", "meal delivery", "healthy food"]):
-            data["value_proposition"] = f"Convenient and nutritious meal delivery{cust_str}"
-        elif any(w in text_lower for w in ["accounting", "bookkeeping", "invoice"]):
-            data["value_proposition"] = f"Automated and streamlined financial management{cust_str}"
-        elif data.get("product"):
-            data["value_proposition"] = f"Accessible and reliable {data['product'].lower()}{cust_str}"
+        prod_name = data.get("product") or "solution"
+        data["value_proposition"] = f"Efficient and accessible {prod_name.lower()}{cust_str}"
 
     return data
 

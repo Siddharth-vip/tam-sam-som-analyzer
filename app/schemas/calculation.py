@@ -372,6 +372,10 @@ class CalculationInput(BaseModel):
     business_idea: Optional[str] = Field(default=None, description="Brief description of the business idea.")
     target_geography: Optional[str] = Field(default=None, description="Target geographic scope.")
     target_year: Optional[int] = Field(default=None, description="Target calendar year.")
+    market_definition: Optional[str] = Field(default=None, description="Dynamic market definition.")
+    tam_methodology: Optional[str] = Field(default=None, description="Selected TAM calculation methodology.")
+    sam_methodology: Optional[str] = Field(default=None, description="Selected SAM calculation methodology.")
+    som_methodology: Optional[str] = Field(default=None, description="Selected SOM calculation methodology.")
     top_down_inputs: Optional[TopDownCalculationInputs] = Field(default=None, description="Top-down sizing inputs.")
     bottom_up_inputs: Optional[BottomUpCalculationInputs] = Field(default=None, description="Bottom-up sizing inputs.")
     assumptions: List[CalculationAssumption] = Field(default_factory=list, description="Explicit assumptions.")
@@ -494,6 +498,52 @@ class ReliabilityAssessment(BaseModel):
     currency_consistency: str = Field(default="CONSISTENT", description="Currency alignment status.")
 
 
+class TAMTrace(BaseModel):
+    """Deterministic trace of evidence selected for TAM."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    candidate_id: Optional[str] = Field(default=None, description="Unique ID of selected TAM evidence candidate.")
+    value: Optional[Any] = Field(default=None, description="Selected TAM value or estimate.")
+    geography: Optional[str] = Field(default=None, description="Geographic scope of selected evidence.")
+    year: Optional[Any] = Field(default=None, description="Reference year of selected evidence.")
+    source: Optional[str] = Field(default=None, description="Source URL or publication name.")
+
+
+class SAMTrace(BaseModel):
+    """Deterministic trace of evidence and factors selected for SAM."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    candidate_id: Optional[str] = Field(default=None, description="Unique ID of selected narrowing candidate.")
+    factor: Optional[Any] = Field(default=None, description="Selected narrowing percentage or customer count factor.")
+    factor_type: Optional[str] = Field(default=None, description="Type of narrowing factor (geography, segment, channel, etc.).")
+    reason: Optional[str] = Field(default=None, description="Justification or semantic rationale for applying this factor.")
+    formula: Optional[str] = Field(default=None, description="Exact arithmetic derivation formula.")
+    value: Optional[Any] = Field(default=None, description="Calculated SAM value.")
+
+
+class SOMTrace(BaseModel):
+    """Deterministic trace of evidence selected for SOM."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    candidate_id: Optional[str] = Field(default=None, description="Unique ID of selected SOM candidate.")
+    factor: Optional[Any] = Field(default=None, description="Obtainable capture percentage or target customer capacity.")
+    reason: Optional[str] = Field(default=None, description="Justification or rationale for SOM status.")
+    value: Optional[Any] = Field(default=None, description="Calculated SOM value.")
+
+
+class CalculationTrace(BaseModel):
+    """Structured calculation trace object for deterministic auditing and debugging."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    tam: Optional[TAMTrace] = Field(default=None, description="TAM derivation trace.")
+    sam: Optional[SAMTrace] = Field(default=None, description="SAM derivation trace.")
+    som: Optional[SOMTrace] = Field(default=None, description="SOM derivation trace.")
+
+
 class CalculationReport(BaseModel):
     """Comprehensive auditable calculation report containing TAM, SAM, SOM, and method comparison."""
 
@@ -522,5 +572,11 @@ class CalculationReport(BaseModel):
     all_steps: List[CalculationStep] = Field(default_factory=list, description="Complete unified audit trail.")
     all_assumptions: List[CalculationAssumption] = Field(default_factory=list, description="All assumptions utilized.")
     conflicts: List[Dict[str, Any]] = Field(default_factory=list, description="Contradictory evidence items flagged.")
+    market_definition: Optional[str] = Field(default=None, description="Concise definition of the market being analyzed.")
+    tam_methodology: Optional[str] = Field(default=None, description="Selected TAM sizing methodology.")
+    sam_methodology: Optional[str] = Field(default=None, description="Selected SAM sizing methodology.")
+    som_methodology: Optional[str] = Field(default=None, description="Selected SOM sizing methodology.")
     warnings: List[str] = Field(default_factory=list, description="Global calculation warnings and caveats.")
+    calculation_trace: Optional[CalculationTrace] = Field(default=None, description="Deterministic evidence calculation trace for debugging.")
+
 

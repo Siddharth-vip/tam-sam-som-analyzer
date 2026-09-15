@@ -830,3 +830,261 @@ def test_sam_case_3_no_sam_narrowing_evidence_tam_valid_sam_insufficient(calc_se
     assert sam_bu.estimate is None
     assert "insufficient evidence" in sam_bu.message.lower()
 
+
+def test_solar_tam_46_dollar_regression(calc_service: CalculationService) -> None:
+    """REGRESSION TEST: Solar Panel Installation $46/year TAM failure.
+    
+    Business: 'Affordable home solar panel installation services for residential households in Tamil Nadu'
+    Failure root cause:
+    - Growth range 22-24% with unit 'units' was incorrectly treated as 23 potential customers.
+    - Commodity tariff rate 'INR 2/kWh' was incorrectly treated as 2 INR annual ARPU.
+    - Resulting in Bottom-Up TAM = 23 * 2 = 46 INR ($46/year) which overrode the valid $122.5B Top-Down TAM.
+    
+    Verification:
+    - Non-entity 'units' and commodity '/kWh' tariffs must be rejected from bottom-up inputs.
+    - Top-Down TAM ($122.5B) is properly computed and selected.
+    - SAM ($85.75B) is properly narrowed to 70% and is strictly less than TAM.
+    - SOM remains INSUFFICIENT_EVIDENCE under the SOM safety rule.
+    """
+    from app.orchestration.pipeline import MarketAnalysisPipeline
+    from app.orchestration.models import PipelineRequest, PipelineStatus
+    from app.schemas.validation import EvidenceValidationResult, EvidenceValidationStatus
+    from app.schemas.extraction import MarketMetricType
+
+    pipeline = MarketAnalysisPipeline()
+
+    val_items = [
+        # Candidate 1: Percentage growth range (22-24%)
+        EvidenceValidationResult(
+            candidate_id="cand-growth",
+            metric="units",
+            value=None,
+            unit="units",
+            raw_value_expression="22-24%",
+            range_min=22.0,
+            range_max=24.0,
+            is_valid=True,
+            validation_status=EvidenceValidationStatus.VALID,
+            lifecycle_stage=DiscoveryLifecycleStage.VALIDATED,
+            source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
+            source_context="Commercial buyers accelerating rooftop pipelines by 22-24% each year.",
+            source_url="https://mordorintelligence.com/solar-india",
+        ),
+        # Candidate 2: Commodity tariff rate (INR 2/kWh)
+        EvidenceValidationResult(
+            candidate_id="cand-tariff",
+            metric="tariff / usage rate",
+            value=2.0,
+            unit="INR",
+            raw_value_expression="INR 2/kWh",
+            is_valid=True,
+            validation_status=EvidenceValidationStatus.VALID,
+            lifecycle_stage=DiscoveryLifecycleStage.VALIDATED,
+            source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
+            source_context="pushing discovered tariffs to INR 2/kWh, a new national floor.",
+            source_url="https://mordorintelligence.com/solar-india",
+        ),
+        # Candidate 3: Calendar forecast year span (2026-2031)
+        EvidenceValidationResult(
+            candidate_id="cand-years",
+            metric="units",
+            value=None,
+            unit="units",
+            raw_value_expression="2026 - 2031",
+            range_min=2026.0,
+            range_max=2031.0,
+            is_valid=True,
+            validation_status=EvidenceValidationStatus.VALID,
+            lifecycle_stage=DiscoveryLifecycleStage.VALIDATED,
+            source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
+            source_context="India Solar Energy Market Growth Trends and Forecast (2026 - 2031)",
+            source_url="https://mordorintelligence.com/solar-india",
+        ),
+        # Candidate 4: Genuine Macro Market Size ($122.5B)
+        EvidenceValidationResult(
+            candidate_id="cand-macro",
+            metric="market size / revenue",
+            metric_type=MarketMetricType.MARKET_SIZE,
+            value=122_500_000_000.0,
+            unit="USD",
+            raw_value_expression="USD 122.5 billion",
+            is_valid=True,
+            validation_status=EvidenceValidationStatus.VALID,
+            lifecycle_stage=DiscoveryLifecycleStage.VALIDATED,
+            source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
+            source_context="The India Solar Energy Market size was valued at USD 122.5 billion in 2025.",
+            source_url="https://mordorintelligence.com/solar-india",
+        ),
+        # Candidate 5: Target Residential Segment Percentage (70%)
+        EvidenceValidationResult(
+            candidate_id="cand-segment",
+            metric="Residential solar share",
+            metric_type=MarketMetricType.MARKET_SHARE,
+            value=70.0,
+            unit="%",
+            raw_value_expression="70%",
+            is_valid=True,
+            validation_status=EvidenceValidationStatus.VALID,
+            lifecycle_stage=DiscoveryLifecycleStage.VALIDATED,
+            source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
+            source_context="Residential solar accounts for 70% of rooftop installations.",
+            source_url="https://intellectualmarketinsights.com/report/solar-india",
+        ),
+    ]
+
+    req = PipelineRequest(
+        business_idea="Affordable home solar panel installation services for residential households in Tamil Nadu",
+        preferred_geography="Tamil Nadu, India",
+    )
+
+    calc_input = pipeline._build_calculation_inputs(
+        analysis=None,
+        validated_items=val_items,
+        request=req,
+    )
+
+    # CASE A: Growth percentage such as 22-24% is rejected as a customer count
+    assert calc_input.bottom_up_inputs.potential_customers is None, "Case A: Growth range 22-24% must NOT be treated as customer population count!"
+
+    # CASE B: Forecast year range such as 2026-2031 is rejected as a customer count
+    assert calc_input.bottom_up_inputs.serviceable_customers is None, "Case B: Forecast year span 2026-2031 must NOT be treated as serviceable customer count!"
+
+    # CASE C: Commodity tariff (INR 2/kWh) is rejected as annual ARPU/pricing
+    assert calc_input.bottom_up_inputs.pricing is None, "Case C: Commodity tariff INR 2/kWh must NOT be treated as annual ARPU!"
+
+    # CASE D: Valid macro market size $122.5B produces valid Top-Down TAM
+    assert calc_input.top_down_inputs is not None
+    assert calc_input.top_down_inputs.macro_market_size is not None
+    assert calc_input.top_down_inputs.macro_market_size.value == 122_500_000_000.0
+
+    # CASE E: Valid 70% residential segment evidence produces Top-Down SAM = $122.5B * 70% = $85.75B
+    assert calc_input.top_down_inputs.target_segment_percentage is not None
+    assert calc_input.top_down_inputs.target_segment_percentage.value == 70.0
+
+    # Run Calculation Report
+    report = calc_service.generate_report(calc_input)
+    assert report.bottom_up_tam.status == CalculationStatus.INSUFFICIENT_EVIDENCE
+    assert report.top_down_tam.status == CalculationStatus.CALCULATED
+    assert report.top_down_tam.estimate == 122_500_000_000.0
+
+    assert report.top_down_sam.status == CalculationStatus.CALCULATED
+    assert report.top_down_sam.estimate == 85_750_000_000.0  # $122.5B * 70%
+    assert report.top_down_sam.estimate < report.top_down_tam.estimate
+
+    # CASE H: SOM remains Insufficient Evidence when no obtainable-market evidence exists
+    assert report.top_down_som.status == CalculationStatus.INSUFFICIENT_EVIDENCE
+
+    # Final Result Synthesis in pipeline
+    final_res = pipeline._build_final_result(
+        pipeline_id="pipe-solar-1",
+        status=PipelineStatus.COMPLETED,
+        request=req,
+        analysis=None,
+        research_queries=[],
+        discovered_sources=[],
+        fetched_sources=[],
+        extracted_candidates=[],
+        validation_results=val_items,
+        tri_result=None,
+        calc_report=report,
+        errors=[],
+        warnings=[],
+        audit_trail=[],
+        started_at="2026-09-15T00:00:00Z",
+    )
+
+    # CASE F: Invalid bottom-up operands cannot cause TAM/SAM to become $46/$46
+    assert final_res.tam.status == CalculationStatus.CALCULATED
+    assert final_res.tam.estimate == 122_500_000_000.0, f"TAM must be $122.5B, got {final_res.tam.estimate}"
+    assert final_res.tam.estimate != 46.0
+
+    # CASE G: SAM remains <= TAM (and strictly narrowed: $85.75B < $122.5B)
+    assert final_res.sam.status == CalculationStatus.CALCULATED
+    assert final_res.sam.estimate == 85_750_000_000.0, f"SAM must be $85.75B, got {final_res.sam.estimate}"
+    assert final_res.sam.estimate < final_res.tam.estimate
+    assert final_res.sam.estimate <= final_res.tam.estimate
+
+    # CASE H: SOM remains Insufficient Evidence
+    assert final_res.som.status == CalculationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_solar_tam_insufficient_evidence_when_no_macro_or_valid_bottom_up(calc_service: CalculationService) -> None:
+    """When only commodity tariffs and growth rates exist without valid macro/customer evidence,
+    TAM and SAM must return INSUFFICIENT_EVIDENCE instead of producing an absurd $46 figure.
+    """
+    from app.orchestration.pipeline import MarketAnalysisPipeline
+    from app.orchestration.models import PipelineRequest, PipelineStatus
+    from app.schemas.validation import EvidenceValidationResult, EvidenceValidationStatus
+
+    pipeline = MarketAnalysisPipeline()
+
+    val_items = [
+        EvidenceValidationResult(
+            candidate_id="cand-growth",
+            metric="units",
+            value=None,
+            unit="units",
+            raw_value_expression="22-24%",
+            range_min=22.0,
+            range_max=24.0,
+            is_valid=True,
+            validation_status=EvidenceValidationStatus.VALID,
+            lifecycle_stage=DiscoveryLifecycleStage.VALIDATED,
+            source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
+            source_context="Commercial buyers accelerating rooftop pipelines by 22-24% each year.",
+            source_url="https://mordorintelligence.com/solar-india",
+        ),
+        EvidenceValidationResult(
+            candidate_id="cand-tariff",
+            metric="tariff / usage rate",
+            value=2.0,
+            unit="INR",
+            raw_value_expression="INR 2/kWh",
+            is_valid=True,
+            validation_status=EvidenceValidationStatus.VALID,
+            lifecycle_stage=DiscoveryLifecycleStage.VALIDATED,
+            source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
+            source_context="pushing discovered tariffs to INR 2/kWh, a new national floor.",
+            source_url="https://mordorintelligence.com/solar-india",
+        ),
+    ]
+
+    req = PipelineRequest(
+        business_idea="Affordable home solar panel installation services for residential households in Tamil Nadu",
+    )
+
+    calc_input = pipeline._build_calculation_inputs(
+        analysis=None,
+        validated_items=val_items,
+        request=req,
+    )
+
+    report = calc_service.generate_report(calc_input)
+    assert report.bottom_up_tam.status == CalculationStatus.INSUFFICIENT_EVIDENCE
+    assert report.top_down_tam is None or report.top_down_tam.status == CalculationStatus.INSUFFICIENT_EVIDENCE
+
+    final_res = pipeline._build_final_result(
+        pipeline_id="pipe-solar-1",
+        status=PipelineStatus.COMPLETED,
+        request=req,
+        analysis=None,
+        research_queries=[],
+        discovered_sources=[],
+        fetched_sources=[],
+        extracted_candidates=[],
+        validation_results=val_items,
+        tri_result=None,
+        calc_report=report,
+        errors=[],
+        warnings=[],
+        audit_trail=[],
+        started_at="2026-09-15T00:00:00Z",
+    )
+
+    assert final_res.tam.status in (CalculationStatus.INSUFFICIENT_EVIDENCE, CalculationStatus.NOT_CALCULABLE)
+    assert final_res.tam.estimate is None
+    assert final_res.sam.status in (CalculationStatus.INSUFFICIENT_EVIDENCE, CalculationStatus.NOT_CALCULABLE)
+    assert final_res.sam.estimate is None
+    assert final_res.som.status == CalculationStatus.INSUFFICIENT_EVIDENCE
+
+

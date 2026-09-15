@@ -47,6 +47,25 @@ KNOWN_GEOGRAPHIES = [
     "Mumbai",
     "Delhi",
     "Hyderabad",
+    "Pune",
+    "Kolkata",
+    "Ahmedabad",
+    "Tamil Nadu",
+    "Karnataka",
+    "Maharashtra",
+    "Kerala",
+    "Gujarat",
+    "Telangana",
+    "Andhra Pradesh",
+    "West Bengal",
+    "Uttar Pradesh",
+    "Punjab",
+    "Rajasthan",
+    "Haryana",
+    "Madhya Pradesh",
+    "Odisha",
+    "Bihar",
+    "Goa",
     "United States",
     "US",
     "USA",
@@ -54,13 +73,21 @@ KNOWN_GEOGRAPHIES = [
     "Europe",
     "Asia",
     "Southeast Asia",
-    "Global",
-    "Worldwide",
     "United Kingdom",
     "UK",
     "Germany",
     "Japan",
     "China",
+    "Indonesia",
+    "Thailand",
+    "Brazil",
+    "France",
+    "Canada",
+    "Australia",
+    "Italy",
+    "Spain",
+    "Global",
+    "Worldwide",
 ]
 
 APPROX_QUALIFIERS = [
@@ -106,7 +133,7 @@ RECOGNIZED_MARKET_ENTITIES = {
     "download", "downloads", "transaction", "transactions", "license", "licenses",
     "seat", "seats", "device", "devices", "vehicle", "vehicles", "course", "courses",
     "enrollment", "enrollments", "registration", "registrations",
-    "station", "stations", "charger", "chargers", "port", "ports", "point", "points", "outlet", "outlets",
+    "station", "stations", "charger", "chargers", "point", "points", "outlet", "outlets",
     "ev", "evs", "car", "cars", "automobile", "automobiles", "fleet", "fleets",
     "two-wheeler", "two-wheelers", "three-wheeler", "three-wheelers", "bus", "buses", "truck", "trucks",
     "cab", "cabs", "taxi", "taxis", "ride", "rides", "trip", "trips", "session", "sessions",
@@ -173,20 +200,58 @@ class EvidenceExtractionService:
         metric: str,
         unit: Optional[str] = None,
         context: Optional[str] = None,
+        value: Optional[float] = None,
+        multiplier: Optional[str] = None,
     ) -> Optional[MarketMetricType]:
         """Map extracted text metric, unit, and context to canonical MarketMetricType taxonomy."""
         m_lower = (metric or "").lower().strip()
         u_lower = (unit or "").lower().strip()
         ctx_lower = (context or "").lower().strip()
 
-        # Pricing & ARPU
-        if any(p in m_lower or p in ctx_lower for p in ("price", "pricing", "arpu", "subscription", "fee", "cost per", "rate", "/month", "/year", "annual fee")):
-            if any(curr in u_lower for curr in ("usd", "inr", "eur", "gbp", "dollar", "rupee")):
-                return MarketMetricType.SUBSCRIPTION_PRICE if any(s in m_lower or s in ctx_lower for s in ("subscription", "monthly", "annual", "plan")) else MarketMetricType.AVERAGE_PRICE
+        # Reject commodity tariffs / usage rates from being misclassified as annual ARPU
+        if any(c in ctx_lower or c in m_lower or c in u_lower for c in ("/kwh", "per kwh", "/watt", "per watt", "/kw", "tariff", "tariffs", "/km", "/hour", "/hr", "/gb", "/mb", "/token", "/call")):
+            return None
 
-        # Market Size / Revenue
-        if any(curr in u_lower for curr in ("usd", "inr", "eur", "gbp", "dollar", "rupee")):
-            return MarketMetricType.MARKET_SIZE
+        # Funding / Investment Amount (e.g. "raised $50M in Series B")
+        FUNDING_TERMS = ("raised", "funding", "seed round", "series a", "series b", "series c", "venture funding", "invested", "investment round")
+        if any(ft in ctx_lower or ft in m_lower for ft in FUNDING_TERMS) and not any(mm in m_lower for mm in ("market size", "industry size", "total market")):
+            return MarketMetricType.FUNDING_AMOUNT
+
+        # Company Revenue (single company revenue e.g. "Acme Corp reported revenue of $500M")
+        COMPANY_REV_TERMS = ("reported revenue", "annual revenue of", "generated revenue of", "company revenue", "its revenue", "total sales of")
+        if any(cr in ctx_lower or cr in m_lower for cr in COMPANY_REV_TERMS) and not any(mm in m_lower for mm in ("market size", "industry size", "sector size", "total market")):
+            return MarketMetricType.COMPANY_REVENUE
+
+        # Pricing & ARPU & Unit Economics
+        UNIT_ECONOMICS_TERMS = (
+            "price", "pricing", "arpu", "subscription", "fee", "cost per", "rate", "/month", "/year",
+            "annual fee", "expenditure", "spend per", "spending per", "per pet", "per companion pet",
+            "per user", "per student", "per capita", "per head", "per household", "per animal", "per dog", "per cat",
+            "per person", "per subscriber", "per learner", "per client", "per account", "per employee",
+            "per transaction", "per order", "per delivery", "per meal", "per ride", "per lesson", "per session",
+            "per consultation", "per item", "per garment", "per piece", "order value", "average order value",
+            "aov", "unit price", "annual spend", "annual expenditure", "spend", "cost", "charge",
+            "tuition", "fare", "ticket"
+        )
+        is_currency_unit = any(curr in u_lower for curr in ("usd", "inr", "eur", "gbp", "dollar", "rupee", "$", "₹", "€", "£"))
+        has_macro_mult = multiplier and multiplier.lower() in ("million", "billion", "crore", "lakh", "trillion", "mn", "bn", "cr", "t", "m", "b")
+        is_large_val = (value is not None and value >= 1_000_000.0) or has_macro_mult
+
+        if is_currency_unit:
+            if any(p in m_lower or p in ctx_lower for p in UNIT_ECONOMICS_TERMS) or not is_large_val:
+                if any(s in m_lower or s in ctx_lower for s in ("subscription", "monthly", "annual plan", "plan", "/mo", "/month")):
+                    return MarketMetricType.SUBSCRIPTION_PRICE
+                return MarketMetricType.AVERAGE_PRICE
+
+        # Market Size / Revenue (only if genuine macro market terms are present AND scale is large)
+        MACRO_MARKET_TERMS = (
+            "market size", "market revenue", "market value", "market spending", "total market",
+            "overall market", "industry size", "industry revenue", "sector revenue", "market reached",
+            "market was valued", "market is valued", "market valuation", "market worth"
+        )
+        if is_currency_unit and is_large_val:
+            if any(mm in m_lower or mm in ctx_lower for mm in MACRO_MARKET_TERMS) or not any(p in m_lower or p in ctx_lower for p in UNIT_ECONOMICS_TERMS):
+                return MarketMetricType.MARKET_SIZE
 
         # Market Share / Growth Rate / CAGR
         if "%" in u_lower or "percent" in u_lower or "pct" in u_lower:
@@ -207,23 +272,67 @@ class EvidenceExtractionService:
             return MarketMetricType.HOUSEHOLDS
         if any(p in u_lower or p in m_lower for p in ("population", "people", "citizen", "individual", "adult", "youth", "child", "teen")):
             return MarketMetricType.POPULATION
-        if any(c in u_lower or c in m_lower for c in ("customer", "buyer", "subscriber", "client", "enterprise", "company", "business", "startup", "smb", "sme")):
+        if any(c in u_lower or c in m_lower for c in ("customer", "buyer", "subscriber", "client", "enterprise", "company", "business", "startup", "smb", "sme", "plant", "factory", "firm", "manufacturer")):
             return MarketMetricType.CUSTOMER_COUNT
 
         return None
 
-    def extract_geography_from_text(self, text: str) -> Optional[str]:
-        """Identify explicit geographic references in text without hallucinating."""
+    def _find_all_geographies_with_spans(self, text: str) -> List[Tuple[int, int, str]]:
+        """Find all recognized geographies in text along with their (start, end) spans."""
+        cleaned_text = re.sub(r"[\u2018\u2019\u201a\u201b\ufffd]", "'", text)
+        results: List[Tuple[int, int, str]] = []
         for geo in KNOWN_GEOGRAPHIES:
             pattern = rf"\b{re.escape(geo)}\b"
-            if re.search(pattern, text, re.IGNORECASE):
-                # Standardize acronyms / canonical casing
+            for m in re.finditer(pattern, cleaned_text, re.IGNORECASE):
+                canon_geo = geo
                 if geo.upper() in ("US", "USA"):
-                    return "United States"
-                if geo.upper() == "UK":
-                    return "United Kingdom"
-                return geo
+                    canon_geo = "United States"
+                elif geo.upper() == "UK":
+                    canon_geo = "United Kingdom"
+                results.append((m.start(), m.end(), canon_geo))
+        return results
+
+    def extract_geography_from_text(self, text: str) -> Optional[str]:
+        """Identify explicit geographic references in text without hallucinating."""
+        found = self._find_all_geographies_with_spans(text)
+        if found:
+            found.sort(key=lambda x: x[0])
+            return found[0][2]
         return None
+
+    def extract_geography_for_match(self, full_sentence: str, match_start: int, match_end: int) -> Optional[str]:
+        """Extract geography prioritizing immediate local clause/proximity around the match.
+
+        Prevents comparative country entities (e.g. 'trailing China's USD 43,400 million')
+        from erroneously inheriting a distant subject country (e.g. 'India').
+        """
+        # 1. Check immediate prefix window (up to 60 chars before match)
+        prefix_start = max(0, match_start - 60)
+        prefix_window = full_sentence[prefix_start:match_start]
+        prefix_geos = self._find_all_geographies_with_spans(prefix_window)
+        if prefix_geos:
+            # Pick the geography immediately closest to the match (highest start position in prefix)
+            prefix_geos.sort(key=lambda x: x[0], reverse=True)
+            return prefix_geos[0][2]
+
+        # 2. Check immediate suffix window (up to 60 chars after match), excluding global/worldwide denominators
+        suffix_end = min(len(full_sentence), match_end + 60)
+        suffix_window = full_sentence[match_end:suffix_end]
+        is_global_denominator = bool(re.search(r"^\s*(?:of\s+(?:the\s+)?(?:global|worldwide|world))", suffix_window, re.IGNORECASE))
+        suffix_geos = self._find_all_geographies_with_spans(suffix_window)
+        if suffix_geos:
+            suffix_geos.sort(key=lambda x: x[0])
+            first_suffix_geo = suffix_geos[0][2]
+            if not (is_global_denominator and first_suffix_geo in ("Global", "Worldwide")):
+                return first_suffix_geo
+
+        # 3. Fallback to sentence-level geography (excluding denominator 'of the global')
+        sentence_without_global_denominator = re.sub(r"\bof\s+(?:the\s+)?(?:global|worldwide|world)\b", "", full_sentence, flags=re.IGNORECASE)
+        geo_sentence = self.extract_geography_from_text(sentence_without_global_denominator)
+        if geo_sentence:
+            return geo_sentence
+
+        return self.extract_geography_from_text(full_sentence)
 
     def extract_year_from_text(self, text: str) -> Optional[int]:
         """Extract explicit 4-digit calendar year (1990-2035) from context."""
@@ -232,6 +341,36 @@ class EvidenceExtractionService:
             # Pick the year associated with temporal context
             return int(matches[0])
         return None
+
+    def extract_year_for_match(self, full_sentence: str, match_start: int, match_end: int) -> Optional[int]:
+        """Extract calendar year prioritizing immediate local syntactic attachment (suffix/prefix) then proximity."""
+        # 1. Immediate suffix check: e.g. 'USD 8.6 Billion in 2025', 'USD 9.2 Billion (2026)', 'in 2025'
+        suffix = full_sentence[match_end:min(len(full_sentence), match_end + 30)]
+        m_suf = re.search(r"^\s*(?:in|by|for|during|of|to|target)?\s*\(?(19\d\d|20[0-3]\d)\b", suffix, re.IGNORECASE)
+        if m_suf:
+            return int(m_suf.group(1))
+
+        # 2. Immediate prefix check: e.g. 'In 2025, USD 8.6 Billion', '2025 market: USD 8.6 Billion'
+        prefix = full_sentence[max(0, match_start - 30):match_start]
+        m_pre = re.search(r"\b(19\d\d|20[0-3]\d)\s*(?::|market|revenue|size|value|valuation|spending|reached|was|is)?\s*$", prefix, re.IGNORECASE)
+        if m_pre:
+            return int(m_pre.group(1))
+
+        # 3. Proximity fallback
+        matches = list(re.finditer(r"\b(199\d|20[0-3]\d)\b", full_sentence))
+        if not matches:
+            return None
+
+        def _dist(m: re.Match) -> float:
+            if m.end() <= match_start:
+                return float(match_start - m.end())
+            elif m.start() >= match_end:
+                return float(m.start() - match_end)
+            else:
+                return 0.0
+
+        matches.sort(key=_dist)
+        return int(matches[0].group(1))
 
     def parse_number_with_multiplier(self, num_str: str, multiplier_str: Optional[str]) -> float:
         """Parse float and apply multiplier (million, billion, lakh, crore, etc.)."""
@@ -263,7 +402,7 @@ class EvidenceExtractionService:
     ) -> List[ExtractedEvidenceCandidate]:
         """Extract candidate metrics from an individual sentence using deterministic patterns."""
         candidates: List[ExtractedEvidenceCandidate] = []
-        cleaned_sentence = sentence.strip()
+        cleaned_sentence = re.sub(r"[\u2018\u2019\u201a\u201b\ufffd]", "'", sentence.strip())
         if not cleaned_sentence or len(cleaned_sentence) < 10:
             return candidates
 
@@ -278,7 +417,6 @@ class EvidenceExtractionService:
             if len(all_numbers) == 1 and re.match(r"^(19\d\d|20[0-3]\d)$", all_numbers[0]):
                 return candidates
 
-        geo = self.extract_geography_from_text(cleaned_sentence)
         year = self.extract_year_from_text(cleaned_sentence)
 
         extracted_spans: List[Tuple[int, int]] = []
@@ -298,6 +436,8 @@ class EvidenceExtractionService:
             max_str = range_match.group(3)
             multiplier = range_match.group(4)
             unit_candidate = range_match.group(5)
+            cand_geo = self.extract_geography_for_match(cleaned_sentence, range_match.start(), range_match.end())
+            cand_year = self.extract_year_for_match(cleaned_sentence, range_match.start(), range_match.end())
 
             try:
                 min_val = self.parse_number_with_multiplier(min_str, multiplier)
@@ -310,9 +450,32 @@ class EvidenceExtractionService:
 
                 # Filter noise
                 if unit.lower() not in NOISE_REJECTION_TERMS and (unit in ("USD", "INR") or self.is_recognized_market_entity(unit)):
-                    is_pricing_term = any(w in cleaned_sentence.lower() for w in ("price", "pricing", "fee", "cost", "subscription", "arpu", "spend", "tuition", "per user", "per student", "per year", "per month", "plan"))
+                    is_explicit_unit_spend = (
+                        (max_val is None or max_val < 1_000_000)
+                        and (
+                            any(w in cleaned_sentence.lower() for w in (
+                                "per companion pet", "per pet", "per animal", "per dog", "per cat",
+                                "per user", "per student", "per customer", "per household", "per head",
+                                "per capita", "per subscriber", "per person", "per unit", "per vehicle",
+                                "per learner", "per account", "per client", "per employee", "per transaction",
+                                "annual expenditure", "annual spend", "expenditure per", "spending per",
+                                "spend per", "cost per", "fee per", "average expenditure", "average spend"
+                            ))
+                            or bool(re.search(r"\bper\s+(?:companion\s+)?(?:pet|dog|cat|animal|user|student|customer|household|head|capita|person|subscriber|learner|account|client|employee|vehicle|unit)\b", cleaned_sentence, re.IGNORECASE))
+                        )
+                    )
+                    is_pricing_term = (
+                        (max_val is None or max_val < 1_000_000)
+                        and any(w in cleaned_sentence.lower() for w in ("price", "pricing", "fee", "cost", "subscription", "arpu", "tuition", "per user", "per student", "per year", "per month", "plan", "annual fee", "per pet", "per customer"))
+                        and not any(w in cleaned_sentence.lower() for w in ("market", "industry", "sector", "total spending", "overall spending", "spending in", "market reached", "market size", "market value", "valuation", "revenues", "revenue"))
+                    )
+                    has_macro_keywords = any(w in cleaned_sentence.lower() for w in (
+                        "market", "industry", "sector", "total spending", "overall spending", "spending in",
+                        "market reached", "market size", "market value", "valuation", "revenues", "revenue",
+                        "market was valued", "market is valued", "market worth"
+                    ))
                     if unit in ("USD", "INR"):
-                        if is_pricing_term or (max_val < 1_000_000 and not any(w in cleaned_sentence.lower() for w in ("market size", "market revenue", "market valuation", "industry size", "total market"))):
+                        if is_explicit_unit_spend or is_pricing_term or (max_val is not None and max_val < 1_000_000 and not has_macro_keywords):
                             m_title = "annual pricing / ARPU"
                             m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence) or MarketMetricType.AVERAGE_PRICE
                         else:
@@ -330,8 +493,8 @@ class EvidenceExtractionService:
                             value=None,
                             raw_value_expression=raw_expr,
                             unit=unit,
-                            geography=geo,
-                            year=year,
+                            geography=cand_geo,
+                            year=cand_year,
                             is_range_or_approximate=True,
                             range_min=min_val,
                             range_max=max_val,
@@ -357,6 +520,8 @@ class EvidenceExtractionService:
                 num_str = approx_match.group(2)
                 multiplier = approx_match.group(3)
                 raw_trailing_words = (approx_match.group(4) or "").split()
+                cand_geo = self.extract_geography_for_match(cleaned_sentence, approx_match.start(), approx_match.end())
+                cand_year = self.extract_year_for_match(cleaned_sentence, approx_match.start(), approx_match.end())
 
                 stop_words = {
                     "in", "on", "at", "by", "for", "from", "with", "to", "across",
@@ -396,8 +561,8 @@ class EvidenceExtractionService:
                                     value=None,
                                     raw_value_expression=raw_expr,
                                     unit=unit,
-                                    geography=geo,
-                                    year=year,
+                                    geography=cand_geo,
+                                    year=cand_year,
                                     is_range_or_approximate=True,
                                     range_min=low_bnd,
                                     range_max=high_bnd,
@@ -415,38 +580,62 @@ class EvidenceExtractionService:
                         except Exception:
                             pass
 
-        # 3. Currency Value Pattern: e.g. "USD 2.5 billion", "valued at $500 million", "revenue of INR 100 crore", "5,000 crore rupees", "10 billion USD"
+        # 3. Currency Value Pattern: e.g. "USD 2.5 billion", "valued at $500 million", "$29.5 per customer", "revenue of INR 100 crore", "5,000 crore rupees", "10 billion USD"
         for currency_match in re.finditer(
-            r"(\b(?:valued at|revenue of|market size of|worth|spending of|cost of|fee of|price of)?\s*(?:(USD|\$|INR|₹|EUR|€)\s*([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?|([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?\s*(USD|dollars?|INR|rupees?|EUR|euros?|GBP|pounds?))\b)",
+            r"(?:(?:\b(?:valued at|revenue of|market size of|worth|spending of|cost of|fee of|price of)\s+)?(?:(USD|\$|INR|₹|EUR|€|GBP|£)\s*([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?|\b([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?\s*(USD|dollars?|INR|rupees?|EUR|euros?|GBP|pounds?))\b)",
             cleaned_sentence,
             re.IGNORECASE,
         ):
             if not spans_overlap(currency_match.start(), currency_match.end()):
-                raw_expr = currency_match.group(1).strip()
-                if currency_match.group(2):
-                    curr_symbol = currency_match.group(2).upper()
-                    num_str = currency_match.group(3)
-                    multiplier = currency_match.group(4)
+                raw_expr = currency_match.group(0).strip()
+                if currency_match.group(1):
+                    curr_symbol = currency_match.group(1).upper()
+                    num_str = currency_match.group(2)
+                    multiplier = currency_match.group(3)
                 else:
-                    num_str = currency_match.group(5)
-                    multiplier = currency_match.group(6)
-                    curr_symbol = currency_match.group(7).upper()
+                    num_str = currency_match.group(4)
+                    multiplier = currency_match.group(5)
+                    curr_symbol = currency_match.group(6).upper()
 
                 unit = (
                     "USD" if any(c in curr_symbol for c in ("USD", "$", "DOLLAR"))
                     else ("INR" if any(c in curr_symbol for c in ("INR", "₹", "RUPEE"))
                     else ("EUR" if any(c in curr_symbol for c in ("EUR", "€", "EURO"))
-                    else ("GBP" if any(c in curr_symbol for c in ("GBP", "POUND")) else curr_symbol)))
+                    else ("GBP" if any(c in curr_symbol for c in ("GBP", "£", "POUND")) else curr_symbol)))
                 )
+                cand_geo = self.extract_geography_for_match(cleaned_sentence, currency_match.start(), currency_match.end())
+                cand_year = self.extract_year_for_match(cleaned_sentence, currency_match.start(), currency_match.end())
+
                 try:
                     resolved_val = self.parse_number_with_multiplier(num_str, multiplier)
-                    is_pricing_term = any(w in cleaned_sentence.lower() for w in ("price", "pricing", "fee", "cost", "subscription", "arpu", "spend", "tuition", "per user", "per student", "per year", "per month", "plan", "annual fee"))
-                    if is_pricing_term or (resolved_val < 1_000_000 and not any(w in cleaned_sentence.lower() for w in ("market size", "market revenue", "market valuation", "industry size", "total market"))):
-                        m_title = "annual pricing / ARPU"
-                        m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence) or MarketMetricType.AVERAGE_PRICE
+                    has_macro_multiplier = multiplier is not None and multiplier.lower() in ("million", "billion", "crore", "lakh", "trillion", "mn", "bn", "cr", "t", "m", "b")
+                    is_macro_scale = has_macro_multiplier or resolved_val >= 1_000_000.0
+
+                    is_explicit_unit_spend = (
+                        not is_macro_scale
+                        or any(w in cleaned_sentence.lower() for w in (
+                            "per companion pet", "per pet", "per animal", "per dog", "per cat",
+                            "per user", "per student", "per customer", "per household", "per head",
+                            "per capita", "per subscriber", "per person", "per unit", "per vehicle",
+                            "per learner", "per account", "per client", "per employee", "per transaction",
+                            "per order", "per delivery", "per meal", "per ride", "per item", "per piece",
+                            "annual expenditure", "annual spend", "expenditure per", "spending per",
+                            "spend per", "cost per", "fee per", "average expenditure", "average spend",
+                            "average spending", "order value", "average order value", "aov", "unit price"
+                        ))
+                        or bool(re.search(r"\bper\s+(?:companion\s+)?(?:pet|dog|cat|animal|user|student|customer|household|head|capita|person|subscriber|learner|account|client|employee|vehicle|unit|order|delivery|meal|item|piece)\b", cleaned_sentence, re.IGNORECASE))
+                    )
+
+                    is_commodity_term = any(w in cleaned_sentence.lower() for w in ("tariff", "tariffs", "/kwh", "per kwh", "/watt", "per watt", "/km", "/hour", "/hr", "/gb", "/mb", "/token", "/call"))
+                    if is_commodity_term:
+                        m_title = "tariff / usage rate"
+                        m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence, value=resolved_val, multiplier=multiplier)
+                    elif not is_macro_scale or is_explicit_unit_spend:
+                        m_type = self.classify_market_metric_type(metric="annual pricing / ARPU", unit=unit, context=cleaned_sentence, value=resolved_val, multiplier=multiplier) or MarketMetricType.AVERAGE_PRICE
+                        m_title = "annual pricing / ARPU" if m_type == MarketMetricType.ANNUAL_SPEND else ("average order value" if m_type == MarketMetricType.AVERAGE_ORDER_VALUE else ("subscription price" if m_type == MarketMetricType.SUBSCRIPTION_PRICE else "unit price / average price"))
                     else:
                         m_title = "market size / revenue"
-                        m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence) or MarketMetricType.MARKET_SIZE
+                        m_type = self.classify_market_metric_type(metric=m_title, unit=unit, context=cleaned_sentence, value=resolved_val, multiplier=multiplier) or MarketMetricType.MARKET_SIZE
 
                     candidates.append(
                         ExtractedEvidenceCandidate(
@@ -455,14 +644,14 @@ class EvidenceExtractionService:
                             value=resolved_val,
                             raw_value_expression=raw_expr,
                             unit=unit,
-                            geography=geo,
-                            year=year,
+                            geography=cand_geo,
+                            year=cand_year,
                             is_range_or_approximate=False,
                             source_name=source_name,
                             source_url=source_url,
                             source_context=cleaned_sentence,
                             extraction_method=ExtractionMethod.DETERMINISTIC_PATTERN,
-                            extraction_confidence=ConfidenceLevel.HIGH if year and geo else ConfidenceLevel.MEDIUM,
+                            extraction_confidence=ConfidenceLevel.HIGH if cand_year and cand_geo else ConfidenceLevel.MEDIUM,
                             lifecycle_stage=DiscoveryLifecycleStage.EXTRACTED,
                         )
                     )
@@ -476,60 +665,111 @@ class EvidenceExtractionService:
             cleaned_sentence,
             re.IGNORECASE,
         ):
-            if not spans_overlap(count_match.start(), count_match.end()):
-                num_str = count_match.group(1)
-                multiplier = count_match.group(2)
-                raw_trailing_words = count_match.group(3).split()
+            # Guard against currency symbols immediately preceding count match (e.g. "$29.5 per customer")
+            match_start = count_match.start()
+            prefix_char = cleaned_sentence[match_start - 1] if match_start > 0 else ""
+            if prefix_char in ("$", "₹", "€", "£") or spans_overlap(count_match.start(), count_match.end()):
+                continue
 
-                # Guard: Standalone calendar year (e.g. "2024 college students graduated") check
-                if not (multiplier is None and re.match(r"^(19\d\d|20[0-3]\d)$", num_str.replace(",", ""))):
-                    stop_words = {
-                        "in", "on", "at", "by", "for", "from", "with", "to", "across",
-                        "is", "are", "was", "were", "and", "or", "as", "during", "of", "who",
-                        "which", "that", "over", "between",
-                    }
-                    trailing_verbs = {"enrolled", "registered", "operating", "living", "located", "based", "working"}
+            num_str = count_match.group(1)
+            multiplier = count_match.group(2)
+            raw_trailing_words = count_match.group(3).split()
+            cand_geo = self.extract_geography_for_match(cleaned_sentence, count_match.start(), count_match.end())
+            cand_year = self.extract_year_for_match(cleaned_sentence, count_match.start(), count_match.end())
 
-                    noun_words = []
-                    for word in raw_trailing_words:
-                        w_lower = word.lower()
-                        if w_lower in stop_words:
-                            break
-                        if w_lower in trailing_verbs and len(noun_words) > 0:
-                            break
-                        noun_words.append(word)
+            # Guard: Standalone calendar year (e.g. "2024 college students graduated") check
+            if not (multiplier is None and re.match(r"^(19\d\d|20[0-3]\d)$", num_str.replace(",", ""))):
+                stop_words = {
+                    "in", "on", "at", "by", "for", "from", "with", "to", "across",
+                    "is", "are", "was", "were", "and", "or", "as", "during", "of", "who",
+                    "which", "that", "over", "between",
+                }
+                trailing_verbs = {"enrolled", "registered", "operating", "living", "located", "based", "working"}
 
-                    if noun_words:
-                        unit_word = noun_words[-1].lower()
-                        if not any(w.lower() in NOISE_REJECTION_TERMS for w in noun_words) and self.is_recognized_market_entity(unit_word):
-                            subject_noun = " ".join(noun_words)
-                            mult_part = f" {multiplier}" if multiplier else ""
-                            raw_expr = f"{num_str}{mult_part} {subject_noun}"
+                noun_words = []
+                for word in raw_trailing_words:
+                    w_lower = word.lower()
+                    if w_lower in stop_words:
+                        break
+                    if w_lower in trailing_verbs and len(noun_words) > 0:
+                        break
+                    noun_words.append(word)
 
-                            try:
-                                resolved_val = self.parse_number_with_multiplier(num_str, multiplier)
-                                m_type = self.classify_market_metric_type(metric=subject_noun, unit=noun_words[-1], context=cleaned_sentence)
-                                candidates.append(
-                                    ExtractedEvidenceCandidate(
-                                        metric=subject_noun,
-                                        metric_type=m_type,
-                                        value=resolved_val,
-                                        raw_value_expression=raw_expr,
-                                        unit=noun_words[-1],
-                                        geography=geo,
-                                        year=year,
-                                        is_range_or_approximate=False,
-                                        source_name=source_name,
-                                        source_url=source_url,
-                                        source_context=cleaned_sentence,
-                                        extraction_method=ExtractionMethod.DETERMINISTIC_PATTERN,
-                                        extraction_confidence=ConfidenceLevel.HIGH if year and geo else ConfidenceLevel.MEDIUM,
-                                        lifecycle_stage=DiscoveryLifecycleStage.EXTRACTED,
-                                    )
+                if noun_words:
+                    unit_word = noun_words[-1].lower()
+                    if not any(w.lower() in NOISE_REJECTION_TERMS for w in noun_words) and self.is_recognized_market_entity(unit_word):
+                        subject_noun = " ".join(noun_words)
+                        mult_part = f" {multiplier}" if multiplier else ""
+                        raw_expr = f"{num_str}{mult_part} {subject_noun}"
+
+                        try:
+                            resolved_val = self.parse_number_with_multiplier(num_str, multiplier)
+                            m_type = self.classify_market_metric_type(metric=subject_noun, unit=noun_words[-1], context=cleaned_sentence)
+                            candidates.append(
+                                ExtractedEvidenceCandidate(
+                                    metric=subject_noun,
+                                    metric_type=m_type,
+                                    value=resolved_val,
+                                    raw_value_expression=raw_expr,
+                                    unit=noun_words[-1],
+                                    geography=cand_geo,
+                                    year=cand_year,
+                                    is_range_or_approximate=False,
+                                    source_name=source_name,
+                                    source_url=source_url,
+                                    source_context=cleaned_sentence,
+                                    extraction_method=ExtractionMethod.DETERMINISTIC_PATTERN,
+                                    extraction_confidence=ConfidenceLevel.HIGH if cand_year and cand_geo else ConfidenceLevel.MEDIUM,
+                                    lifecycle_stage=DiscoveryLifecycleStage.EXTRACTED,
                                 )
-                                extracted_spans.append((count_match.start(), count_match.end()))
-                            except Exception:
-                                pass
+                            )
+                            extracted_spans.append((count_match.start(), count_match.end()))
+                        except Exception:
+                            pass
+
+        # 5. Percentage / Share Pattern: e.g. "5.41% of the global market", "51.1% of pet care service transactions", "market share of 73.00%", "accounting for 5.41%"
+        for pct_match in re.finditer(
+            r"([0-9]+(?:\.[0-9]+)?)\s*(%|percent|percentage)(?:\s+(?:of\s+)?([a-zA-Z]+(?:\s+[a-zA-Z]+){0,4}))?",
+            cleaned_sentence,
+            re.IGNORECASE,
+        ):
+            if not spans_overlap(pct_match.start(), pct_match.end()):
+                pct_num_str = pct_match.group(1)
+                raw_trailing = (pct_match.group(3) or "").strip()
+                raw_expr = pct_match.group(0).strip()
+                cand_geo = self.extract_geography_for_match(cleaned_sentence, pct_match.start(), pct_match.end())
+                cand_year = self.extract_year_for_match(cleaned_sentence, pct_match.start(), pct_match.end())
+                try:
+                    pct_val = float(pct_num_str)
+                    is_growth = any(w in cleaned_sentence.lower() for w in ("growth", "cagr", "increase", "yoy", "year-on-year", "annual growth", "grew"))
+                    if is_growth:
+                        m_title = "growth rate / CAGR"
+                        m_type = MarketMetricType.GROWTH_RATE
+                    else:
+                        m_title = raw_trailing if raw_trailing else "market share / segment percentage"
+                        m_type = MarketMetricType.MARKET_SHARE
+
+                    candidates.append(
+                        ExtractedEvidenceCandidate(
+                            metric=m_title,
+                            metric_type=m_type,
+                            value=pct_val,
+                            raw_value_expression=raw_expr,
+                            unit="%",
+                            geography=cand_geo,
+                            year=cand_year,
+                            is_range_or_approximate=False,
+                            source_name=source_name,
+                            source_url=source_url,
+                            source_context=cleaned_sentence,
+                            extraction_method=ExtractionMethod.DETERMINISTIC_PATTERN,
+                            extraction_confidence=ConfidenceLevel.HIGH if cand_year and cand_geo else ConfidenceLevel.MEDIUM,
+                            lifecycle_stage=DiscoveryLifecycleStage.EXTRACTED,
+                        )
+                    )
+                    extracted_spans.append((pct_match.start(), pct_match.end()))
+                except Exception:
+                    pass
 
         return candidates
 

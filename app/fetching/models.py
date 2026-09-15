@@ -16,6 +16,7 @@ class FetchStatus(str, Enum):
     BLOCKED = "blocked"
     INVALID_SOURCE = "invalid_source"
     OVERSIZED = "oversized"
+    SNIPPET_FALLBACK = "snippet_fallback"
 
 
 class FetchRequest(BaseModel):

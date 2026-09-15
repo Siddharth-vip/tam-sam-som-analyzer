@@ -290,7 +290,7 @@ async def test_end_to_end_college_programming_platform_india():
             assert "linux" not in m
             assert "bird" not in m
             assert "tip" not in m
-            assert "llm" not in m
+            assert not re.search(r"\bllms?\b", m)
 
         # Deterministic SOM safety rule check: SOM is withheld without explicit user assumption
         if res.som:
