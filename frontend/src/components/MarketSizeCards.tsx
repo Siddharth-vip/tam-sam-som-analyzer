@@ -57,6 +57,7 @@ export const MarketSizeCards: React.FC<Props> = ({ tam, sam, som, currency = 'IN
   const tamStatus = getStatusDisplay(tam);
   const samStatus = getStatusDisplay(sam);
   const somStatus = getStatusDisplay(som);
+  const isSamInsufficient = !sam || sam.estimate == null || sam.status !== 'calculated';
   const isSomInsufficient = !som || som.estimate == null || som.status !== 'calculated';
 
   return (
@@ -128,49 +129,86 @@ export const MarketSizeCards: React.FC<Props> = ({ tam, sam, som, currency = 'IN
           className="glass-card animate-fade-in"
           style={{
             position: 'relative',
-            borderTop: '4px solid #06b6d4',
-            background: 'linear-gradient(180deg, rgba(6, 182, 212, 0.08) 0%, rgba(17, 24, 39, 0.8) 100%)',
+            borderTop: `4px solid ${isSamInsufficient ? '#f59e0b' : '#06b6d4'}`,
+            background: isSamInsufficient
+              ? 'linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, rgba(17, 24, 39, 0.8) 100%)'
+              : 'linear-gradient(180deg, rgba(6, 182, 212, 0.08) 0%, rgba(17, 24, 39, 0.8) 100%)',
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
             <div>
-              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#67e8f9', letterSpacing: '0.05em' }}>
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: isSamInsufficient ? '#fcd34d' : '#67e8f9', letterSpacing: '0.05em' }}>
                 SERVICEABLE ADDRESSABLE MARKET
               </span>
               <h3 style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '0.2rem' }}>SAM</h3>
             </div>
-            <ConfidenceBadge confidence={sam?.confidence} />
+            {isSamInsufficient ? (
+              <span className="badge badge-medium">
+                <ShieldAlert size={13} />
+                INSUFFICIENT EVIDENCE
+              </span>
+            ) : (
+              <ConfidenceBadge confidence={sam?.confidence} />
+            )}
           </div>
 
           <div style={{ margin: '1.25rem 0' }}>
-            <div
-              style={{
-                fontSize: '2rem',
-                fontWeight: 800,
-                color: '#ffffff',
-                letterSpacing: '-0.02em',
-                fontFamily: 'var(--font-sans)',
-              }}
-            >
-              {sam && sam.estimate !== null && sam.estimate !== undefined
-                ? formatCurrencyValue(sam.estimate, activeCurrency, '/yr')
-                : 'Not calculable'}
-            </div>
+            {isSamInsufficient ? (
+              <div>
+                <div
+                  style={{
+                    fontSize: '1.4rem',
+                    fontWeight: 700,
+                    color: '#fbbf24',
+                    letterSpacing: '-0.01em',
+                  }}
+                >
+                  Pending Evidence
+                </div>
+                <p style={{ fontSize: '0.8rem', color: '#fef3c7', marginTop: '0.4rem', lineHeight: 1.4 }}>
+                  {sam?.message || 'No validated serviceable market evidence or user constraint was provided.'}
+                </p>
+              </div>
+            ) : (
+              <div>
+                <div
+                  style={{
+                    fontSize: '2rem',
+                    fontWeight: 800,
+                    color: '#ffffff',
+                    letterSpacing: '-0.02em',
+                    fontFamily: 'var(--font-sans)',
+                  }}
+                >
+                  {formatCurrencyValue(sam!.estimate, activeCurrency, '/yr')}
+                </div>
 
-            <div style={{ marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <span className={`badge ${samStatus.badgeClass}`} style={{ fontSize: '0.7rem' }}>
-                {samStatus.label}
-              </span>
-              {getIntervalString(sam) && (
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  {getIntervalString(sam)}
-                </span>
-              )}
-            </div>
+                <div style={{ marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <span className={`badge ${samStatus.badgeClass}`} style={{ fontSize: '0.7rem' }}>
+                    {samStatus.label}
+                  </span>
+                  {sam?.sam_percentage_of_tam != null && (
+                    <span style={{ fontSize: '0.8rem', color: '#38bdf8', fontWeight: 600 }}>
+                      {sam.sam_percentage_of_tam}% of TAM
+                    </span>
+                  )}
+                  {sam?.serviceable_customer_count != null && (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      • {sam.serviceable_customer_count.toLocaleString()} customers
+                    </span>
+                  )}
+                  {getIntervalString(sam) && (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      ({getIntervalString(sam)})
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <p style={{ fontSize: '0.825rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-            The specific segment of TAM targeted by your current product profile and geography.
+            The specific portion of TAM reachable based on customer persona, geography, and serviceability constraints.
           </p>
         </div>
 
@@ -249,9 +287,19 @@ export const MarketSizeCards: React.FC<Props> = ({ tam, sam, som, currency = 'IN
                   <span className={`badge ${somStatus.badgeClass}`} style={{ fontSize: '0.7rem' }}>
                     {somStatus.label}
                   </span>
+                  {som?.som_percentage_of_sam != null && (
+                    <span style={{ fontSize: '0.8rem', color: '#34d399', fontWeight: 600 }}>
+                      {som.som_percentage_of_sam}% of SAM
+                    </span>
+                  )}
+                  {som?.obtainable_customer_count != null && (
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      • {Number(som.obtainable_customer_count).toLocaleString()} customers
+                    </span>
+                  )}
                   {getIntervalString(som) && (
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                      {getIntervalString(som)}
+                      ({getIntervalString(som)})
                     </span>
                   )}
                 </div>

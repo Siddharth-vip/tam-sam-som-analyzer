@@ -88,6 +88,19 @@ class AssumptionImpact(str, Enum):
     CRITICAL = "CRITICAL"
 
 
+class DataType(str, Enum):
+    """Classification of empirical origin for market figures."""
+
+    LIVE_VERIFIED_SOURCE = "LIVE_VERIFIED_SOURCE"
+    SOURCED = "sourced"
+    MOCK_SOURCE = "MOCK_SOURCE"
+    USER_PROVIDED = "USER_PROVIDED"
+    DERIVED = "derived"
+    ESTIMATED = "estimated"
+    AI_ASSUMPTION = "AI_assumption"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
 class FreshnessCategory(str, Enum):
     """Temporal freshness classification of evidence relative to analysis target year."""
 
@@ -98,12 +111,12 @@ class FreshnessCategory(str, Enum):
     UNKNOWN = "UNKNOWN"                 # Date unstated
 
 
-
 class PriceFrequency(str, Enum):
     """Stated billing frequency for unit pricing inputs."""
 
     ANNUAL = "annual"
     MONTHLY = "monthly"
+    QUARTERLY = "quarterly"
     ONE_TIME = "one_time"
 
 
@@ -144,6 +157,7 @@ class EvidenceInput(BaseModel):
     validation_status: Optional[str] = Field(default=None, description="Validation status (e.g., valid, verified, assumed).")
     lifecycle_stage: Optional[str] = Field(default=None, description="Lifecycle stage. Must NOT be 'discovered'.")
     confidence: Optional[str] = Field(default=None, description="Confidence assessment of source evidence.")
+    data_type: Optional[str] = Field(default="sourced", description="Epistemic data type: 'sourced', 'derived', 'estimated', 'AI_assumption'.")
     is_assumption: bool = Field(default=False, description="True if this input is an explicit assumption.")
     is_user_provided: bool = Field(default=False, description="True if this input was provided by the user.")
     is_model_derived: bool = Field(default=False, description="True if this input was derived by a model heuristic.")
@@ -245,6 +259,38 @@ class CalculationStep(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="Caveats or warnings for this step.")
 
 
+def format_market_display_value(value: Optional[float], currency: Optional[str] = None) -> Optional[str]:
+    """Format numerical market size into standard human-readable financial notation."""
+    if value is None:
+        return None
+    curr = (currency or "INR").upper()
+    if curr in ("INR", "₹"):
+        if abs(value) >= 10_000_000:  # 1 Crore = 10 Million
+            crores = value / 10_000_000
+            return f"₹{crores:,.2f} crore"
+        elif abs(value) >= 100_000:  # 1 Lakh = 100 Thousand
+            lakhs = value / 100_000
+            return f"₹{lakhs:,.2f} lakh"
+        else:
+            return f"₹{value:,.2f}"
+    elif curr in ("USD", "$"):
+        if abs(value) >= 1_000_000_000:
+            return f"${value / 1_000_000_000:,.2f}B"
+        elif abs(value) >= 1_000_000:
+            return f"${value / 1_000_000:,.2f}M"
+        elif abs(value) >= 1_000:
+            return f"${value / 1_000:,.2f}K"
+        else:
+            return f"${value:,.2f}"
+    else:
+        if abs(value) >= 1_000_000_000:
+            return f"{curr} {value / 1_000_000_000:,.2f}B"
+        elif abs(value) >= 1_000_000:
+            return f"{curr} {value / 1_000_000:,.2f}M"
+        else:
+            return f"{curr} {value:,.2f}"
+
+
 class MetricCalculationResult(BaseModel):
     """Result of an individual market sizing computation (TAM, SAM, or SOM)."""
 
@@ -252,6 +298,10 @@ class MetricCalculationResult(BaseModel):
 
     status: CalculationStatus = Field(default=CalculationStatus.NOT_CALCULABLE, description="Calculation outcome status.")
     estimate: Optional[float] = Field(default=None, description="Deterministic point estimate.")
+    display_value: Optional[str] = Field(default=None, description="Human-formatted market sizing display value (e.g. '₹180 crore', '$1.4B').")
+    method: Optional[str] = Field(default="bottom_up", description="Methodology applied (bottom_up, top_down).")
+    formula: Optional[str] = Field(default=None, description="Mathematical formula expression.")
+    inputs: Dict[str, Any] = Field(default_factory=dict, description="Detailed dictionary of input operands with provenance.")
     interval: Optional[UncertaintyInterval] = Field(default=None, description="Uncertainty range bounds.")
     unit: Optional[str] = Field(default=None, description="Measurement unit (e.g., 'INR/year', 'USD/year').")
     currency: Optional[str] = Field(default=None, description="Currency ISO code.")
@@ -265,6 +315,9 @@ class MetricCalculationResult(BaseModel):
     unit_compatibility_warnings: List[str] = Field(default_factory=list, description="Warnings if operand entities require normalization or have potential unit mismatch.")
     year_consistency_note: Optional[str] = Field(default=None, description="Audit note regarding temporal consistency.")
     geography_consistency_note: Optional[str] = Field(default=None, description="Audit note regarding geographic alignment.")
+    sam_percentage_of_tam: Optional[float] = Field(default=None, description="Derived percentage of TAM (SAM / TAM * 100).")
+    som_percentage_of_sam: Optional[float] = Field(default=None, description="Derived percentage of SAM (SOM / SAM * 100).")
+    som_scenarios: Optional[Dict[str, float]] = Field(default=None, description="Conservative, Base, and Optimistic SOM scenario values.")
     steps: List[CalculationStep] = Field(default_factory=list, description="Auditable step-by-step calculation trace.")
     assumptions_used: List[CalculationAssumption] = Field(default_factory=list, description="Assumptions utilized.")
     warnings: List[str] = Field(default_factory=list, description="Validation warnings or caveats.")
@@ -272,6 +325,10 @@ class MetricCalculationResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_estimate_and_status(self) -> "MetricCalculationResult":
+        # Automatically generate display value if estimate is present and display_value is unset
+        if self.estimate is not None and not self.display_value:
+            self.display_value = format_market_display_value(self.estimate, self.currency)
+
         # A metric with no numerical result must NOT be marked "Calculated"
         if self.estimate is None:
             if self.status == CalculationStatus.CALCULATED or self.status == "calculated":
@@ -282,7 +339,6 @@ class MetricCalculationResult(BaseModel):
         return self
 
 
-
 class TAMResult(MetricCalculationResult):
     """Total Addressable Market sizing result."""
     pass
@@ -290,12 +346,43 @@ class TAMResult(MetricCalculationResult):
 
 class SAMResult(MetricCalculationResult):
     """Serviceable Addressable Market sizing result."""
-    pass
+
+    serviceable_customer_count: Optional[float] = Field(
+        default=None, description="Deterministic serviceable customer population count."
+    )
+    serviceability_constraints: List[str] = Field(
+        default_factory=list,
+        description="Applied serviceability dimensions/constraints (geography, segment, product compatibility, regulatory).",
+    )
+    serviceability_evidence: List[str] = Field(
+        default_factory=list, description="Evidence source references justifying serviceability bounds."
+    )
+    serviceability_factor: Optional[float] = Field(
+        default=None, description="Derived serviceability percentage (0-100%)."
+    )
+    calculation_method: Optional[str] = Field(
+        default="bottom_up", description="Calculation method (bottom_up or top_down)."
+    )
 
 
 class SOMResult(MetricCalculationResult):
     """Serviceable Obtainable Market sizing result."""
-    pass
+
+    obtainable_customer_count: Optional[float] = Field(
+        default=None, description="Deterministic obtainable customer count."
+    )
+    obtainable_percentage_of_sam: Optional[float] = Field(
+        default=None, description="Derived percentage of SAM (0-100%)."
+    )
+    obtainable_percentage_of_tam: Optional[float] = Field(
+        default=None, description="Derived percentage of TAM (0-100%)."
+    )
+    calculation_method: Optional[str] = Field(
+        default="bottom_up", description="Calculation method (bottom_up or top_down)."
+    )
+    capacity_assumptions: List[str] = Field(
+        default_factory=list, description="Sales capacity, geographic coverage, or penetration constraints."
+    )
 
 
 class TopDownCalculationInputs(BaseModel):
@@ -334,9 +421,21 @@ class BottomUpCalculationInputs(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    pricing_basis: Optional[str] = Field(
+        default="per_facility",
+        description="Healthcare SaaS pricing basis ('per_facility', 'per_organization', 'per_provider', 'per_user', 'per_seat', 'per_patient', 'per_transaction', 'monthly_subscription', 'annual_subscription', 'usage_based', 'tiered_subscription', 'custom').",
+    )
     potential_customers: Optional[EvidenceInput] = Field(
         default=None,
-        description="Total potential customer population count.",
+        description="Total potential customer population count (organizations, facilities, or individual providers).",
+    )
+    base_organizations: Optional[EvidenceInput] = Field(
+        default=None,
+        description="Base healthcare organization count before applying segment percentage filter.",
+    )
+    segment_percentage: Optional[EvidenceInput] = Field(
+        default=None,
+        description="Percentage of base organizations in target segment (0-100%). Used to derive potential_customers.",
     )
     serviceable_customers: Optional[EvidenceInput] = Field(
         default=None,
@@ -345,6 +444,10 @@ class BottomUpCalculationInputs(BaseModel):
     target_customer_percentage: Optional[EvidenceInput] = Field(
         default=None,
         description="Percentage of potential customers that meet serviceable criteria (0-100%).",
+    )
+    serviceability_constraints: List[str] = Field(
+        default_factory=list,
+        description="List of applied serviceability constraints (e.g., geography, segment, product/integration capability).",
     )
     realistically_obtainable_customers: Optional[EvidenceInput] = Field(
         default=None,
@@ -356,11 +459,23 @@ class BottomUpCalculationInputs(BaseModel):
     )
     pricing: Optional[EvidenceInput] = Field(
         default=None,
-        description="Annual or monthly revenue per customer.",
+        description="Annual, monthly, per-provider, or per-user revenue price.",
     )
     pricing_frequency: PriceFrequency = Field(
         default=PriceFrequency.ANNUAL,
         description="Pricing billing frequency. If monthly, annual price = monthly * 12.",
+    )
+    users_per_organization: Optional[EvidenceInput] = Field(
+        default=None,
+        description="Expected users or seats per organization for per-user / per-seat models.",
+    )
+    providers_per_organization: Optional[EvidenceInput] = Field(
+        default=None,
+        description="Expected providers/clinicians per organization for per-provider models.",
+    )
+    annual_volume_per_customer: Optional[EvidenceInput] = Field(
+        default=None,
+        description="Expected annual patient interactions or transactions per customer for usage-based models.",
     )
 
 

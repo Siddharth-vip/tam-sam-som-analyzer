@@ -1,10 +1,10 @@
 /**
- * TypeScript definitions mapping to the Python FastAPI backend Pydantic models.
- * Strictly adheres to backend schemas without inventing non-existent fields.
+ * TypeScript definitions mapping to the Healthcare SaaS FastAPI backend Pydantic models.
  */
 
 export type PipelineStage =
   | 'received'
+  | 'input_validation'
   | 'business_analysis'
   | 'query_generation'
   | 'discovery'
@@ -13,6 +13,7 @@ export type PipelineStage =
   | 'validation'
   | 'triangulation'
   | 'calculation'
+  | 'report_generation'
   | 'completed'
   | 'failed';
 
@@ -23,6 +24,7 @@ export type PipelineStatus =
   | 'partial'
   | 'failed'
   | 'insufficient_evidence'
+  | 'incomplete_input'
   | 'conflict';
 
 export type EvidenceConfidence = 'low' | 'medium' | 'high' | 'very_high';
@@ -33,7 +35,9 @@ export type CalculationStatus =
   | 'calculated'
   | 'insufficient_evidence'
   | 'conflict'
-  | 'invalid_input';
+  | 'invalid_input'
+  | 'not_calculable'
+  | 'execution_failed';
 
 export interface CalculationAssumption {
   name: string;
@@ -44,7 +48,41 @@ export interface CalculationAssumption {
 }
 
 export interface PipelineRequest {
+  business_name?: string | null;
   business_idea: string;
+  healthcare_saas_category?: string | null;
+  product_description?: string | null;
+  primary_problem?: string | null;
+  primary_use_case?: string | null;
+  key_features?: string[];
+  unique_value_proposition?: string | null;
+  target_country?: string | null;
+  target_state_or_region?: string | null;
+  target_city?: string | null;
+  target_healthcare_market?: string | null;
+  customer_type?: string | null;
+  organization_size?: string | null;
+  number_of_employees?: number | null;
+  number_of_facilities?: number | null;
+  target_customer_segment?: string | null;
+  business_model?: string | null;
+  pricing_model?: string | null;
+  monthly_price?: number | null;
+  annual_price?: number | null;
+  per_user_price?: number | null;
+  per_provider_price?: number | null;
+  per_facility_price?: number | null;
+  currency?: string | null;
+  allow_estimated_pricing?: boolean;
+  healthcare_domain?: string | null;
+  clinical_use?: boolean | null;
+  provider_type?: string | null;
+  patient_involvement?: boolean | null;
+  healthcare_workflow?: string | null;
+  emr_ehr_integration_required?: boolean | null;
+  interoperability_standards?: string | null;
+  regulatory_market?: string | null;
+  regulatory_constraints?: string | null;
   max_sources?: number;
   enable_calculation?: boolean;
   explicit_assumptions?: CalculationAssumption[];
@@ -63,15 +101,50 @@ export interface PipelineProgressEvent {
 }
 
 export interface BusinessAnalysis {
+  business_name?: string | null;
   business_idea: string;
+  sector?: string | null;
+  healthcare_saas_category?: string | null;
   industry?: string | null;
   product?: string | null;
-  target_customer?: string | null;
+  product_description?: string | null;
+  target_country?: string | null;
+  target_region?: string | null;
+  target_city?: string | null;
   geography?: string | null;
+  customer_type?: string | null;
+  target_customer?: string | null;
+  target_customer_segment?: string | null;
+  organization_size?: string | null;
+  number_of_facilities?: number | null;
+  number_of_employees?: number | null;
   business_model?: string | null;
   pricing_model?: string | null;
+  revenue_model?: string | null;
+  monthly_price?: number | null;
+  annual_price?: number | null;
+  per_user_price?: number | null;
+  per_provider_price?: number | null;
+  per_facility_price?: number | null;
+  currency?: string | null;
+  annual_revenue_per_customer?: number | null;
+  healthcare_domain?: string | null;
+  clinical_use?: boolean | null;
+  provider_type?: string | null;
+  patient_involvement?: boolean | null;
+  healthcare_workflow?: string | null;
+  emr_ehr_integration_required?: boolean | null;
+  interoperability_standards?: string | null;
+  regulatory_market?: string | null;
+  regulatory_constraints?: string | null;
+  primary_problem?: string | null;
   customer_problem?: string | null;
+  primary_use_case?: string | null;
+  key_features?: string[];
+  unique_value_proposition?: string | null;
   value_proposition?: string | null;
+  market_category?: string | null;
+  market_definition?: string | null;
 }
 
 export interface CompetitorInfo {
@@ -87,11 +160,11 @@ export interface CompetitorInfo {
 
 export interface ResearchQuery {
   query_id?: string;
-  query_text: string;
-  purpose: string;
-  target_metric: string;
+  metric_required: string;
   geography?: string | null;
   year?: number | null;
+  industry_topic?: string | null;
+  target_population?: string | null;
 }
 
 export type SourceQualityTier =
@@ -114,11 +187,8 @@ export interface DiscoveredSource {
   query_used?: string | null;
   lifecycle_stage?: string | null;
   published_year?: number | null;
-  publication_date?: string | null;
   relevance_score?: number | null;
   is_mock?: boolean;
-  relevance_status?: string;
-  relevance_reason?: string | null;
 }
 
 export interface FetchedSource {
@@ -129,80 +199,47 @@ export interface FetchedSource {
   title?: string | null;
   domain?: string | null;
   source_name?: string | null;
-  lifecycle_stage?: string | null;
   content_type?: string | null;
-  status_code?: number | null;
-  http_status?: number | null;
-  content_length?: number | null;
-  content_length_bytes?: number | null;
+  http_status_code?: number | null;
   content?: string | null;
-  extracted_text?: string | null;
-  fetch_status?: string | null;
-  error_message?: string | null;
-  is_redirected?: boolean;
-  is_cross_domain_redirect?: boolean;
 }
 
 export interface ExtractedEvidenceCandidate {
   candidate_id?: string;
-  metric?: string;
-  metric_name?: string;
-  raw_value?: any;
+  metric: string;
   value?: number | null;
-  normalized_value?: number | null;
   unit?: string | null;
   currency?: string | null;
   year?: number | null;
   geography?: string | null;
-  source_url?: string;
-  source_context?: string | null;
-  source_title?: string | null;
+  source_url?: string | null;
   source_name?: string | null;
   confidence?: string | null;
-  is_assumption?: boolean;
 }
 
 export interface SourceProvenance {
-  source_id?: string;
   source_url: string;
   source_title?: string | null;
   source_name?: string | null;
   domain?: string | null;
   category?: string | null;
   source_quality_tier?: string | null;
-  is_syndicated_copy?: boolean;
   published_year?: number | null;
-  quality_score?: number | null;
-  source_quality_score?: number | null;
-  lifecycle_stage?: string | null;
 }
 
 export interface EvidenceValidationResult {
   candidate_id?: string;
   metric?: string;
-  metric_name?: string;
-  metric_type?: string | null;
-  is_valid?: boolean;
-  validation_status?: string;
   value?: number | null;
-  normalized_value?: number | null;
   unit?: string | null;
   currency?: string | null;
   year?: number | null;
   geography?: string | null;
   source_url?: string;
-  source_context?: string | null;
   source_name?: string | null;
   source_quality_tier?: string | null;
-  is_syndicated_copy?: boolean;
-  evidence_quality_rating?: string | null;
-  source_quality_score?: number | null;
-  confidence?: string | null;
-  lifecycle_stage?: string | null;
   provenance?: SourceProvenance;
-  corroborating_sources?: SourceProvenance[];
-  errors?: string[];
-  warnings?: string[];
+  confidence?: string | null;
 }
 
 export interface ConflictGroup {
@@ -252,6 +289,23 @@ export interface MetricCalculationResult {
   confidence?: string | null;
   evidence_quality?: string | null;
   evidence_quality_reasons?: string[];
+  serviceable_customer_count?: number | null;
+  serviceability_constraints?: string[];
+  serviceability_evidence?: string[];
+  serviceability_factor?: number | null;
+  obtainable_customer_count?: number | null;
+  obtainable_percentage_of_sam?: number | null;
+  obtainable_percentage_of_tam?: number | null;
+  capacity_assumptions?: string[];
+  calculation_method?: string | null;
+  inputs?: Record<string, any>;
+  sam_percentage_of_tam?: number | null;
+  som_percentage_of_sam?: number | null;
+  som_scenarios?: {
+    conservative?: number | null;
+    base?: number | null;
+    optimistic?: number | null;
+  } | null;
   steps: CalculationStep[];
   assumptions_used: CalculationAssumption[];
   warnings: string[];
@@ -270,82 +324,9 @@ export interface MethodComparison {
   currency?: string | null;
   absolute_difference?: number | null;
   percentage_difference?: number | null;
-  relative_ratio?: number | null;
   divergence_severity?: DivergenceSeverity | null;
   divergence_explanation?: string | null;
-  triangulation_confidence?: string | null;
-  root_cause_diagnostics?: string[];
-  sam_comparison?: Record<string, any> | null;
-  som_comparison?: Record<string, any> | null;
   explanation?: string | null;
-}
-
-export interface AssumptionItem {
-  id: string;
-  name: string;
-  value: number;
-  unit: string;
-  category: string;
-  source_type: string;
-  source_reference?: string | null;
-  confidence?: string | null;
-  justification: string;
-  is_user_provided: boolean;
-  is_evidence_based: boolean;
-  is_model_derived: boolean;
-  impact: string;
-  affects: string[];
-  min_value?: number | null;
-  max_value?: number | null;
-  uncertainty_status: string;
-}
-
-export interface AssumptionRegistry {
-  items: AssumptionItem[];
-  total_count: number;
-  user_provided_count: number;
-  model_derived_count: number;
-  critical_assumptions_count: number;
-  high_impact_count: number;
-}
-
-export interface ScenarioEstimate {
-  low?: number | null;
-  base?: number | null;
-  high?: number | null;
-  unit?: string | null;
-  currency?: string | null;
-}
-
-export interface UncertaintyAnalysis {
-  status: string;
-  tam_scenario?: ScenarioEstimate | null;
-  sam_scenario?: ScenarioEstimate | null;
-  som_scenario?: ScenarioEstimate | null;
-  basis: string;
-  explanation: string;
-}
-
-export interface SensitivityParameter {
-  parameter: string;
-  base_value: number;
-  unit: string;
-  impact: string;
-  elasticity: number;
-  explanation: string;
-}
-
-export interface ReliabilityAssessment {
-  level: string;
-  reason: string;
-  evidence_strength: string;
-  assumption_risk: string;
-  freshness: string;
-  methodology_agreement: string;
-  double_counting_risk: boolean;
-  geography_consistency: string;
-  temporal_consistency: string;
-  currency_consistency: string;
 }
 
 export interface CalculationReport {
@@ -364,14 +345,8 @@ export interface CalculationReport {
   confidence: string;
   evidence_quality?: string | null;
   evidence_quality_reasons?: string[];
-  assumption_registry?: AssumptionRegistry | null;
-  uncertainty_analysis?: UncertaintyAnalysis | null;
-  sensitivity_analysis?: SensitivityParameter[];
-  reliability_assessment?: ReliabilityAssessment | null;
-  unit_compatibility_warnings?: string[];
   all_steps: CalculationStep[];
   all_assumptions: CalculationAssumption[];
-  conflicts: any[];
   warnings: string[];
   message?: string | null;
 }
@@ -386,6 +361,17 @@ export interface StateTransitionRecord {
   error?: string | null;
 }
 
+export interface HealthcareMarketAttractiveness {
+  rating: 'HIGH' | 'MEDIUM' | 'LOW';
+  score: number;
+  market_size_appeal: string;
+  growth_outlook: string;
+  competitive_intensity: string;
+  procurement_friction: string;
+  regulatory_readiness: string;
+  rationale: string;
+}
+
 export interface PipelineResult {
   pipeline_id: string;
   status: PipelineStatus;
@@ -398,9 +384,16 @@ export interface PipelineResult {
   validation_results: EvidenceValidationResult[];
   triangulation_result?: TriangulationResult | null;
   calculation_report?: CalculationReport | null;
+  calculation_trace?: any;
   tam?: TAMResult | null;
   sam?: SAMResult | null;
   som?: SOMResult | null;
+  som_scenarios?: {
+    conservative?: number | null;
+    base?: number | null;
+    optimistic?: number | null;
+  } | null;
+  market_attractiveness?: HealthcareMarketAttractiveness | null;
   confidence: string;
   evidence_quality_rating?: string | null;
   research_provider?: string | null;
@@ -408,8 +401,10 @@ export interface PipelineResult {
   rejected_candidates?: ExtractedEvidenceCandidate[];
   competitors?: CompetitorInfo[] | null;
   conflicts: ConflictGroup[];
+  final_report_sections?: Record<string, any> | null;
   errors: string[];
   warnings: string[];
+  missing_fields?: string[];
   audit_trail: StateTransitionRecord[];
   provenance: SourceProvenance[];
   started_at: string;

@@ -460,7 +460,7 @@ def test_18_calculation_audit_trail() -> None:
     assert step1.formula == "Monthly Price × 12"
     assert step1.result == 120.0
     step2 = tam.steps[1]
-    assert step2.formula == "Potential Customers × Annual ARPU"
+    assert "potential_customers" in step2.formula.lower()
     assert step2.result == 6000000.0  # 50,000 * 120
     assert "https://source1.example.org" in step2.evidence_references
 

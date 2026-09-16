@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class MockDiscoveryProvider(BaseDiscoveryProvider):
-    """Deterministic in-memory discovery provider for testing and validation."""
+    """Deterministic in-memory discovery provider for Healthcare SaaS testing and validation."""
 
     def __init__(self, seeded_sources: Optional[List[DiscoveredSource]] = None) -> None:
         self.seeded_sources = seeded_sources
@@ -33,95 +33,93 @@ class MockDiscoveryProvider(BaseDiscoveryProvider):
         return " ".join(parts)
 
     async def search(self, query: ResearchQuery) -> List[DiscoveredSource]:
-        """Return matching seeded sources or a structured mock discovery result list."""
+        """Return matching seeded sources or structured Healthcare SaaS mock discovery results."""
         query_string = self.build_query_string(query)
-        logger.info("Executing mock discovery for query: '%s'", query_string)
+        logger.info("Executing mock Healthcare SaaS discovery for query: '%s'", query_string)
 
         if self.seeded_sources is not None:
             return self.seeded_sources[: query.max_results]
 
-        # Generate structured candidate search results for testing
         results: List[DiscoveredSource] = []
-        
         geo_label = query.geography or "India"
         metric_req_lower = query.metric_required.lower()
         industry_lower = (query.industry_topic or "").lower()
         target_pop_lower = (query.target_population or "").lower()
 
-        # Domain-aware mock content generation (prioritize specific industry sector)
-        if "food" in industry_lower or "meal" in industry_lower or "restaurant" in industry_lower or "food" in metric_req_lower or "meal" in metric_req_lower:
-            content_1 = f"Municipal and educational census data indicates {geo_label} has an active student and young adult population of 450,000 college students."
-            snippet_1 = f"Urban Demographics Survey: 450,000 college students in {geo_label}."
-            content_2 = f"The food delivery and meal subscription sector in {geo_label} generated USD 350 million in 2024. College students spend an average of INR 18,000 per year on meals and food delivery."
-            snippet_2 = f"Food Services Study: USD 350 million market in {geo_label}; student meal spend INR 18,000/year."
-            gov_domain = "chennaicorporation.gov.in" if "chennai" in geo_label.lower() else "statistics.gov.in"
-            gov_source_name = "Department of Statistics and Consumer Studies"
-        elif "saas" in industry_lower or "accounting" in industry_lower or "fintech" in industry_lower or "saas" in metric_req_lower or "accounting" in metric_req_lower:
-            content_1 = f"According to official MSME statistical data, {geo_label} has approximately 63 million registered small businesses and micro-enterprises in 2024."
-            snippet_1 = f"Ministry of MSME Report: 63 million small businesses in {geo_label}."
-            content_2 = f"The cloud accounting and business software market in {geo_label} reached USD 1.2 billion in 2024. Small businesses spend an average annual price of INR 12,000 on SaaS accounting tools."
-            snippet_2 = f"SaaS Benchmark Report: USD 1.2 billion market; annual software spend INR 12,000 per enterprise."
-            gov_domain = "msme.gov.in"
-            gov_source_name = "Ministry of Micro, Small and Medium Enterprises"
-        elif "fitness" in industry_lower or "health" in industry_lower or "wellness" in industry_lower or "fitness" in metric_req_lower:
-            content_1 = f"National health and wellness surveys estimate {geo_label} has 48 million urban working professionals actively participating in fitness activities."
-            snippet_1 = f"Health Demographics Survey: 48 million working professionals in {geo_label}."
-            content_2 = f"The digital fitness and wellness app market in {geo_label} was valued at USD 650 million in 2024. Users spend an average of INR 4,800 per year on fitness app subscriptions."
-            snippet_2 = f"Fitness Market Study: USD 650 million market size in {geo_label}; annual subscription spend INR 4,800."
-            gov_domain = "health.gov.in"
-            gov_source_name = "National Health & Demographics Registry"
-        elif "education" in industry_lower or "edtech" in industry_lower or "tutoring" in metric_req_lower or "student" in metric_req_lower or "student" in target_pop_lower:
-            if "college" in metric_req_lower or "college" in target_pop_lower or "higher education" in metric_req_lower:
-                content_1 = f"According to the official AISHE Higher Education Survey 2024, {geo_label} has approximately 41.3 million college students enrolled in higher education institutions."
-                snippet_1 = f"Official AISHE Higher Education Survey: 41.3 million college students in {geo_label}."
-                content_2 = f"The {geo_label} EdTech and online education market was valued at USD 2.5 billion in 2024. College students spend an average of INR 3,600 per year on online coding and skill courses."
-                snippet_2 = f"EdTech Industry Study: Market valued at USD 2.5 billion in {geo_label}; average student spend is INR 3,600 per year."
-            else:
-                content_1 = f"According to national education statistics, {geo_label} has approximately 60 million high school and secondary students enrolled in 2024."
-                snippet_1 = f"National Education Statistics: 60 million students in {geo_label}."
-                content_2 = f"The online tutoring and test prep market in {geo_label} reached USD 1.8 billion in 2024 with an average annual spend of INR 4,500 per student."
-                snippet_2 = f"Market Analysis: USD 1.8 billion tutoring market in {geo_label}; average annual spend INR 4,500."
-            gov_domain = "aishe.gov.in"
-            gov_source_name = "Ministry of Education / AISHE Report"
+        # Healthcare SaaS specific domain mock evidence
+        if any(w in metric_req_lower or w in target_pop_lower for w in ["dental", "dentist", "oral care"]):
+            content_1 = f"National Healthcare & Dental Council data confirms {geo_label} has approximately 35,000 registered dental clinics and practices in 2024."
+            snippet_1 = f"Dental Registry Report: 35,000 dental clinics operating in {geo_label}."
+            content_2 = f"The dental practice management and clinic SaaS market in {geo_label} reached USD 180 million in 2024. Dental clinics spend an average of INR 36,000 per year on practice software."
+            snippet_2 = f"Healthcare SaaS Study: USD 180 million dental SaaS market in {geo_label}; average annual software spend is INR 36,000 per clinic."
+            gov_domain = "mohfw.gov.in"
+            gov_source_name = "Ministry of Health & Family Welfare / Dental Council"
+        elif any(w in metric_req_lower or w in target_pop_lower for w in ["hospital", "hims", "his", "bed"]):
+            content_1 = f"According to National Health Authority (NHA) healthcare infrastructure statistics, {geo_label} has approximately 69,000 registered hospitals (25,000 public and 44,000 private hospitals) in 2024."
+            snippet_1 = f"National Health Registry: 69,000 registered hospitals in {geo_label}."
+            content_2 = f"The hospital information management and EHR SaaS market in {geo_label} was valued at USD 1.4 billion in 2024. Hospitals spend an average annual subscription price of INR 2,40,000 on management software."
+            snippet_2 = f"Hospital IT Survey: USD 1.4 billion market in {geo_label}; average hospital software spend is INR 2,40,000 per year."
+            gov_domain = "nha.gov.in"
+            gov_source_name = "National Health Authority / Ministry of Health"
+        elif any(w in metric_req_lower or w in target_pop_lower for w in ["diagnostic", "pathology", "lab", "radiology", "imaging", "pacs"]):
+            content_1 = f"National Health Mission & Diagnostic Industry Association reports confirm {geo_label} has approximately 100,000 diagnostic laboratories and pathology centers in 2024."
+            snippet_1 = f"Diagnostic Infrastructure Report: 100,000 diagnostic laboratories in {geo_label}."
+            content_2 = f"The diagnostic laboratory information system (LIMS) and PACS SaaS market in {geo_label} reached USD 420 million in 2024. Labs spend an average of INR 60,000 per year on SaaS tools."
+            snippet_2 = f"Diagnostic SaaS Market: USD 420 million market in {geo_label}; annual spend INR 60,000 per lab."
+            gov_domain = "mohfw.gov.in"
+            gov_source_name = "National Health Mission / Ministry of Health"
+        elif any(w in metric_req_lower or w in target_pop_lower for w in ["pharmacy", "pharmacies", "chemist", "drugstore"]):
+            content_1 = f"Pharmacy Council of India statistics confirm {geo_label} has approximately 850,000 retail and hospital pharmacies operating in 2024."
+            snippet_1 = f"Pharmacy Census: 850,000 pharmacies in {geo_label}."
+            content_2 = f"The pharmacy management and e-prescription SaaS market in {geo_label} was valued at USD 310 million in 2024 with an average annual spend of INR 18,000 per pharmacy."
+            snippet_2 = f"Pharmacy IT Analysis: USD 310 million market in {geo_label}; annual software spend INR 18,000."
+            gov_domain = "pci.nic.in"
+            gov_source_name = "Pharmacy Council of India"
         else:
-            content_1 = f"Official statistical report confirms target population for {query.metric_required} in {geo_label} is 25 million individuals in 2024."
-            snippet_1 = f"Official Statistics: 25 million individuals in {geo_label}."
-            content_2 = f"The market for {query.industry_topic or query.metric_required} in {geo_label} reached USD 1.0 billion in 2024 with an average annual spend of INR 5,000 per customer."
-            snippet_2 = f"Market Study: USD 1.0 billion market in {geo_label}; average spend INR 5,000/year."
-            gov_domain = "statistics.gov.in"
-            gov_source_name = "National Statistical Commission"
+            # General outpatient clinics / medical practices
+            content_1 = f"According to Ministry of Health healthcare facility directory data, {geo_label} has approximately 150,000 outpatient clinics and private medical practices in 2024."
+            snippet_1 = f"Official Healthcare Facilities Census: 150,000 outpatient clinics in {geo_label}."
+            content_2 = f"The clinic management and healthcare SaaS market in {geo_label} was valued at USD 850 million in 2024. Outpatient clinics spend an average annual price of INR 48,000 on SaaS software."
+            snippet_2 = f"Healthcare SaaS Industry Report: USD 850 million market in {geo_label}; average annual spend is INR 48,000 per clinic."
+            gov_domain = "mohfw.gov.in"
+            gov_source_name = "Ministry of Health and Family Welfare"
 
-        # Candidate 1: Official/Government candidate
+        # Candidate 1: Official/Government Tier 1 source
         results.append(
             DiscoveredSource(
-                title=f"{query.metric_required} - Official Statistical Report ({geo_label})",
-                url=f"https://{gov_domain}/reports/{geo_label.lower()}-statistics",
+                title=f"National Healthcare Infrastructure Census ({geo_label})",
+                url=f"https://{gov_domain}/reports/{geo_label.lower()}-healthcare-infrastructure",
                 snippet=snippet_1,
                 mock_content=content_1,
                 source_name=gov_source_name,
-                category=SourceCategory.OFFICIAL_GOVERNMENT,
-                source_quality_tier=SourceQualityTier.TIER_1_GOVERNMENT_OFFICIAL,
-                lifecycle_stage=DiscoveryLifecycleStage.DISCOVERED,
-                relevance_score=0.95,
-                is_mock=True,
+                domain=gov_domain,
+                category=SourceCategory.OFFICIAL_GOVERNMENT.value,
+                source_quality_tier=SourceQualityTier.TIER_1_GOVERNMENT_OFFICIAL.value,
                 query_used=query_string,
+                lifecycle_stage=DiscoveryLifecycleStage.DISCOVERED.value,
+                published_year=query.year or 2024,
+                relevance_score=0.96,
+                is_mock=True,
             )
         )
 
-        # Candidate 2: Industry Analyst candidate
+        # Candidate 2: Industry Analyst Tier 2 source
+        analyst_domain = "grandviewresearch.com"
         results.append(
             DiscoveredSource(
-                title=f"{query.industry_topic or query.metric_required} Annual Market & Industry Report",
-                url=f"https://ibef.org/reports/{geo_label.lower()}-market-study",
+                title=f"{query.metric_required} Healthcare SaaS Market Report 2024-2030",
+                url=f"https://{analyst_domain}/industry-analysis/{geo_label.lower()}-healthcare-saas",
                 snippet=snippet_2,
                 mock_content=content_2,
-                source_name="India Brand Equity Foundation / Industry Analysts",
-                category=SourceCategory.INDUSTRY_ANALYST,
-                source_quality_tier=SourceQualityTier.TIER_3_ANALYST_PRESS,
-                lifecycle_stage=DiscoveryLifecycleStage.DISCOVERED,
-                relevance_score=0.88,
-                is_mock=True,
+                source_name="Grand View Healthcare IT Intelligence",
+                domain=analyst_domain,
+                category=SourceCategory.INDUSTRY_ANALYST.value,
+                source_quality_tier=SourceQualityTier.TIER_2_ACADEMIC_TRADE.value,
                 query_used=query_string,
+                lifecycle_stage=DiscoveryLifecycleStage.DISCOVERED.value,
+                published_year=query.year or 2024,
+                relevance_score=0.91,
+                is_mock=True,
             )
         )
 

@@ -119,14 +119,23 @@ RECOGNIZED_MARKET_ENTITIES = {
     "reader", "readers", "member", "members", "client", "clients", "account", "accounts",
     "creator", "creators", "freelancer", "freelancers", "founder", "founders",
 
+    # Healthcare Clinical & Professional Demographics
+    "doctor", "doctors", "physician", "physicians", "clinician", "clinicians",
+    "dentist", "dentists", "radiologist", "radiologists", "pathologist", "pathologists",
+    "pharmacist", "pharmacists", "nurse", "nurses", "practitioner", "practitioners",
+    "surgeon", "surgeons", "therapist", "therapists", "specialist", "specialists",
+
     # Institutional & Business Target Entities
     "enterprise", "enterprises", "company", "companies", "business", "businesses",
     "startup", "startups", "firm", "firms", "institution", "institutions",
     "school", "schools", "college", "colleges", "university", "universities",
     "household", "households", "organization", "organizations", "hospital", "hospitals",
-    "clinic", "clinics", "merchant", "merchants", "vendor", "vendors",
+    "clinic", "clinics", "pharmacy", "pharmacies", "laboratory", "laboratories",
+    "lab", "labs", "polyclinic", "polyclinics", "practice", "practices",
+    "nursing home", "nursing homes", "merchant", "merchants", "vendor", "vendors",
     "smb", "smbs", "sme", "smes", "msme", "msmes",
     "store", "stores", "shop", "shops", "hub", "hubs", "branch", "branches", "site", "sites",
+    "bed", "beds", "facility", "facilities",
 
     # Market Volume, Hardware & Operational Units
     "unit", "units", "installation", "installations", "subscription", "subscriptions",
@@ -601,7 +610,7 @@ class EvidenceExtractionService:
                                 ExtractedEvidenceCandidate(
                                     metric=subject_noun,
                                     metric_type=m_type,
-                                    value=None,
+                                    value=base_val,
                                     raw_value_expression=raw_expr,
                                     unit=unit,
                                     geography=cand_geo,

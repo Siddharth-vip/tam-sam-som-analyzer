@@ -1,11 +1,18 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.fetching.models import FetchedSource
-from app.schemas.business import BusinessAnalysis, CompetitorInfo
+from app.schemas.business import (
+    BusinessAnalysis,
+    CompetitorInfo,
+    HealthcareCustomerType,
+    HealthcarePricingBasis,
+    HealthcareSaaSCategory,
+    IncompleteInputResponse,
+)
 from app.schemas.calculation import (
     CalculationAssumption,
     CalculationReport,
@@ -29,6 +36,7 @@ class PipelineStage(str, Enum):
     """Explicit pipeline execution stages."""
 
     RECEIVED = "received"
+    INPUT_VALIDATION = "input_validation"
     BUSINESS_ANALYSIS = "business_analysis"
     QUERY_GENERATION = "query_generation"
     DISCOVERY = "discovery"
@@ -37,6 +45,7 @@ class PipelineStage(str, Enum):
     VALIDATION = "validation"
     TRIANGULATION = "triangulation"
     CALCULATION = "calculation"
+    REPORT_GENERATION = "report_generation"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -54,40 +63,231 @@ class PipelineStatus(str, Enum):
     PARTIAL = "partial"
     FAILED = "failed"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    INCOMPLETE_INPUT = "INCOMPLETE_INPUT"
     CONFLICT = "conflict"
 
 
 class PipelineRequest(BaseModel):
-    """Input request model for end-to-end TAM/SAM/SOM market analysis pipeline."""
+    """Healthcare SaaS Input Request Schema."""
 
     model_config = ConfigDict(extra="ignore")
 
+    # A. Business Information
+    business_name: Optional[str] = Field(
+        default=None,
+        description="Name of the Healthcare SaaS product or startup.",
+        examples=["MedFlow AI"],
+    )
     business_idea: str = Field(
         ...,
-        description="The business concept or product idea to analyze.",
-        examples=["An affordable online programming platform for college students in India"],
+        description="The Healthcare SaaS business concept or description.",
+        examples=["AI-powered clinic management and EHR SaaS for dental clinics in India"],
     )
+    healthcare_saas_category: Optional[Union[HealthcareSaaSCategory, str]] = Field(
+        default=None,
+        description="Healthcare SaaS category (e.g. Clinic Management SaaS, Hospital Management SaaS, EHR/EMR SaaS).",
+    )
+    product_description: Optional[str] = Field(
+        default=None,
+        description="Detailed product features and capabilities.",
+    )
+    primary_problem: Optional[str] = Field(
+        default=None,
+        description="Core healthcare/clinical or operational problem being solved.",
+    )
+    primary_use_case: Optional[str] = Field(
+        default=None,
+        description="Primary workflow or clinical use case.",
+    )
+    key_features: List[str] = Field(
+        default_factory=list,
+        description="List of key software features.",
+    )
+    unique_value_proposition: Optional[str] = Field(
+        default=None,
+        description="Unique differentiator or value proposition.",
+    )
+
+    # B. Target Market
+    target_country: Optional[str] = Field(
+        default=None,
+        description="Target country (e.g. India, United States, United Kingdom).",
+    )
+    target_state_or_region: Optional[str] = Field(
+        default=None,
+        description="Target state, province, or region if applicable.",
+    )
+    target_region: Optional[str] = Field(
+        default=None,
+        description="Alias for target_state_or_region.",
+    )
+    target_city: Optional[str] = Field(
+        default=None,
+        description="Target city if localized.",
+    )
+    target_healthcare_market: Optional[str] = Field(
+        default=None,
+        description="Sub-market within healthcare (e.g. Tier 2/3 Private Hospitals, Dental Clinics).",
+    )
+
+    # C. Customer Information (Paying Entity)
+    customer_type: Optional[Union[HealthcareCustomerType, str]] = Field(
+        default=None,
+        description="The paying entity type (e.g. Hospitals, Clinics, Diagnostic Laboratories, Pharmacies, Medical Practices).",
+    )
+    organization_size: Optional[str] = Field(
+        default=None,
+        description="Customer organization size (e.g. Small Practice, 50-200 Beds, Large Enterprise Network).",
+    )
+    number_of_employees: Optional[int] = Field(
+        default=None,
+        description="Expected users/seats per organization.",
+    )
+    number_of_facilities: Optional[int] = Field(
+        default=None,
+        description="Expected facilities/branches per organization.",
+    )
+    number_of_organizations: Optional[int] = Field(
+        default=None,
+        description="Explicit user-provided target organization count if known.",
+    )
+    target_customer_segment: Optional[str] = Field(
+        default=None,
+        description="Specific target persona or buyer profile (e.g. Independent Dental Practitioners).",
+    )
+
+    # D. Product / SaaS Model & Pricing
+    business_model: Optional[str] = Field(
+        default="B2B SaaS",
+        description="Business model (e.g. B2B, B2C, B2B2C).",
+    )
+    pricing_basis: Optional[Union[HealthcarePricingBasis, str]] = Field(
+        default=None,
+        description="Pricing basis: 'per_user', 'per_provider', 'per_facility', 'per_bed', 'monthly_subscription', 'annual_subscription', 'usage_based', 'tiered_subscription', 'custom'.",
+    )
+    pricing_model: Optional[Union[HealthcarePricingBasis, str]] = Field(
+        default=None,
+        description="Monetization model: 'monthly_subscription', 'annual_subscription', 'per_provider', 'per_facility', 'per_user', 'custom'.",
+    )
+    monthly_price: Optional[float] = Field(
+        default=None,
+        description="Monthly subscription price in local currency.",
+    )
+    annual_price: Optional[float] = Field(
+        default=None,
+        description="Annual subscription price in local currency.",
+    )
+    per_user_price: Optional[float] = Field(
+        default=None,
+        description="Per-user/seat price.",
+    )
+    per_provider_price: Optional[float] = Field(
+        default=None,
+        description="Per-doctor/physician/clinician price.",
+    )
+    per_facility_price: Optional[float] = Field(
+        default=None,
+        description="Per-hospital/clinic/facility price.",
+    )
+    currency: Optional[str] = Field(
+        default="INR",
+        description="Pricing currency (INR, USD, EUR, GBP, etc.).",
+    )
+    allow_estimated_pricing: bool = Field(
+        default=False,
+        description="If True, allow the system to use researched industry pricing benchmarks if specific pricing is unprovided.",
+    )
+
+    # E. Healthcare-Specific Information
+    healthcare_domain: Optional[str] = Field(
+        default=None,
+        description="Specialty or domain (e.g. Dental, Radiology, Primary Care, Oncology, Cardiology).",
+    )
+    clinical_use: Optional[bool] = Field(
+        default=None,
+        description="True if product is directly involved in clinical care/diagnostics; False for administrative/operational.",
+    )
+    provider_type: Optional[str] = Field(
+        default=None,
+        description="Provider designation (e.g. Radiologists, General Practitioners, Dentists, Lab Technicians).",
+    )
+    patient_involvement: Optional[bool] = Field(
+        default=None,
+        description="True if patients directly log in or interact with the software.",
+    )
+    healthcare_workflow: Optional[str] = Field(
+        default=None,
+        description="Target clinical or operational workflow.",
+    )
+    emr_ehr_integration_required: Optional[bool] = Field(
+        default=None,
+        description="Whether integration with hospital/clinic EMR/EHR systems is necessary.",
+    )
+    interoperability_standards: Optional[str] = Field(
+        default=None,
+        description="Interoperability standards (e.g. HL7 FHIR, ABDM M1/M2/M3, DICOM, SMART-on-FHIR).",
+    )
+    regulatory_market: Optional[str] = Field(
+        default=None,
+        description="Applicable healthcare regulatory frameworks (e.g. NABH/ABDM/DISHA for India, HIPAA/FDA for US, CE/MDR for EU).",
+    )
+    regulatory_constraints: Optional[str] = Field(
+        default=None,
+        description="Identified compliance constraints or certifications required.",
+    )
+
+    # F. SOM Acquisition & Sales Capacity Factors
+    sales_team_size: Optional[int] = Field(
+        default=None,
+        description="Number of direct sales representatives or account executives dedicated to customer acquisition.",
+    )
+    sales_cycle_months: Optional[float] = Field(
+        default=None,
+        description="Expected institutional sales and procurement cycle in months (e.g. 1-2 months for single clinics, 6-12 months for enterprise hospitals).",
+    )
+    expected_customer_acquisition_annual: Optional[float] = Field(
+        default=None,
+        description="Expected or planned customer acquisition count in Year 1-3.",
+    )
+    geographic_reach_percentage: Optional[float] = Field(
+        default=None,
+        description="Initial addressable geographic reach percentage within the country (e.g. 100% for national, 25% for regional launch).",
+    )
+    serviceable_percentage: Optional[float] = Field(
+        default=None,
+        description="Explicit user-provided serviceable customer percentage (0-100%).",
+    )
+    serviceable_organizations: Optional[int] = Field(
+        default=None,
+        description="Explicit user-provided serviceable organization count.",
+    )
+    serviceability_criteria: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Explicit user-specified serviceability constraints (e.g., 'NABH Accredited', 'Tier 1/2 Cities', 'EMR Adoption').",
+    )
+
+    # Pipeline controls & backwards compatibility
     max_sources: int = Field(
         default=5,
         ge=1,
         le=50,
-        description="Maximum external sources to discover and fetch (bounded between 1 and 50).",
+        description="Maximum external sources to discover and fetch.",
     )
     enable_calculation: bool = Field(
         default=True,
-        description="Whether to perform deterministic TAM/SAM/SOM calculations after triangulation.",
+        description="Whether to perform deterministic TAM/SAM/SOM calculations.",
     )
     explicit_assumptions: List[CalculationAssumption] = Field(
         default_factory=list,
-        description="Optional user-provided assumptions (e.g. pricing, target market share).",
+        description="Optional explicit assumptions.",
     )
     preferred_geography: Optional[str] = Field(
         default=None,
-        description="Optional explicit target geography override.",
+        description="Target geography alias.",
     )
     preferred_year: Optional[int] = Field(
         default=None,
-        description="Optional reference calendar year override.",
+        description="Target analysis year alias.",
     )
 
     @field_validator("business_idea")
@@ -101,10 +301,10 @@ class PipelineRequest(BaseModel):
             raise ValueError("business_idea must be at least 3 characters.")
         return cleaned
 
-    @field_validator("preferred_geography", mode="before")
+    @field_validator("target_country", "preferred_geography", mode="before")
     @classmethod
-    def sanitize_preferred_geography(cls, v: Optional[str]) -> Optional[str]:
-        """Sanitize Swagger placeholder strings or empty values to None."""
+    def sanitize_geography(cls, v: Optional[str]) -> Optional[str]:
+        """Sanitize empty or Swagger placeholder strings."""
         if v is None:
             return None
         if isinstance(v, str):
@@ -117,7 +317,7 @@ class PipelineRequest(BaseModel):
     @field_validator("preferred_year", mode="before")
     @classmethod
     def sanitize_preferred_year(cls, v: Optional[int]) -> Optional[int]:
-        """Sanitize 0 or invalid year placeholders to None."""
+        """Sanitize year."""
         if v is None:
             return None
         try:
@@ -130,36 +330,43 @@ class PipelineRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def coerce_assumptions_alias(cls, data: Any) -> Any:
-        """Coerce assumptions key into explicit_assumptions if provided."""
+    def normalize_fields(cls, data: Any) -> Any:
+        """Normalize aliases and populate missing links."""
         if isinstance(data, dict):
+            # Geography synchronization
+            if not data.get("target_country") and data.get("preferred_geography"):
+                data["target_country"] = data["preferred_geography"]
+            elif data.get("target_country") and not data.get("preferred_geography"):
+                data["preferred_geography"] = data["target_country"]
+            
+            # Region synchronization
+            if not data.get("target_region") and data.get("target_state_or_region"):
+                data["target_region"] = data["target_state_or_region"]
+            elif data.get("target_region") and not data.get("target_state_or_region"):
+                data["target_state_or_region"] = data["target_region"]
+
+            # Pricing basis / model synchronization
+            if data.get("pricing_basis") and not data.get("pricing_model"):
+                val = data["pricing_basis"]
+                data["pricing_model"] = val.value if hasattr(val, "value") else str(val)
+            elif data.get("pricing_model") and not data.get("pricing_basis"):
+                val = data["pricing_model"]
+                data["pricing_basis"] = val.value if hasattr(val, "value") else str(val)
+
+            # EMR / EHR integration field alias
+            if "emr_integration_required" in data and "emr_ehr_integration_required" not in data:
+                data["emr_ehr_integration_required"] = data["emr_integration_required"]
+            elif "emr_ehr_integration_required" in data and "emr_integration_required" not in data:
+                data["emr_integration_required"] = data["emr_ehr_integration_required"]
+
+            # Clinical or non-clinical string alias
+            if "clinical_or_non_clinical" in data and data.get("clinical_use") is None:
+                val = str(data["clinical_or_non_clinical"]).strip().lower()
+                data["clinical_use"] = val == "clinical"
+
             if "assumptions" in data and not data.get("explicit_assumptions"):
                 data["explicit_assumptions"] = data["assumptions"]
         return data
-
-    @field_validator("explicit_assumptions", mode="before")
-    @classmethod
-    def sanitize_explicit_assumptions(cls, v: Any) -> List[Any]:
-        """Filter out Swagger dummy placeholders from explicit assumptions."""
-        if not v or not isinstance(v, list):
-            return []
-        sanitized: List[Any] = []
-        for item in v:
-            if isinstance(item, dict):
-                name = str(item.get("name", "")).strip().lower()
-                unit = str(item.get("unit", "")).strip().lower()
-                if name in ("string", "", "none", "null", "undefined") or unit in ("string", ""):
-                    continue
-                sanitized.append(item)
-            elif isinstance(item, CalculationAssumption):
-                name = item.name.strip().lower()
-                unit = item.unit.strip().lower()
-                if name in ("string", "", "none", "null", "undefined") or unit in ("string", ""):
-                    continue
-                sanitized.append(item)
-            else:
-                sanitized.append(item)
-        return sanitized
 
 
 class PipelineProgressEvent(BaseModel):
@@ -199,8 +406,21 @@ class StateTransitionRecord(BaseModel):
     error: Optional[str] = Field(default=None, description="Error detail if phase encountered an exception.")
 
 
+class HealthcareMarketAttractiveness(BaseModel):
+    """Final assessment of Healthcare SaaS market opportunity."""
+
+    rating: str = Field(..., description="Overall score: HIGH, MEDIUM, LOW.")
+    score: float = Field(default=0.0, ge=0.0, le=10.0, description="Quantitative attractiveness score 0-10.")
+    market_size_appeal: str = Field(default="MEDIUM", description="Attractiveness of addressable TAM/SAM.")
+    growth_outlook: str = Field(default="STRONG", description="Healthcare sector CAGR and adoption trajectory.")
+    competitive_intensity: str = Field(default="MODERATE", description="Competitive density and incumbent barriers.")
+    procurement_friction: str = Field(default="MODERATE", description="Healthcare sales cycle and decision-maker complexity.")
+    regulatory_readiness: str = Field(default="MANAGEABLE", description="Compliance/certification overhead.")
+    rationale: str = Field(..., description="Detailed reasoned justification for the rating.")
+
+
 class PipelineResult(BaseModel):
-    """Final comprehensive auditable report returned by the Market Analysis Pipeline."""
+    """Final comprehensive auditable report for Healthcare SaaS Market Analysis."""
 
     model_config = ConfigDict(extra="ignore", use_enum_values=True)
 
@@ -218,11 +438,11 @@ class PipelineResult(BaseModel):
     )
     business_analysis: Optional[BusinessAnalysis] = Field(
         default=None,
-        description="Structured business concept extraction.",
+        description="Structured Healthcare SaaS concept extraction and classification.",
     )
     research_queries: List[ResearchQuery] = Field(
         default_factory=list,
-        description="Generated research requirement queries.",
+        description="Generated healthcare research requirement queries.",
     )
     discovered_sources: List[DiscoveredSource] = Field(
         default_factory=list,
@@ -260,9 +480,17 @@ class PipelineResult(BaseModel):
         default=None,
         description="Serviceable Obtainable Market result summary.",
     )
+    som_scenarios: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Conservative, Base, and Optimistic SOM estimates.",
+    )
     calculation_trace: Optional[CalculationTrace] = Field(
         default=None,
         description="Structured deterministic calculation trace for auditing.",
+    )
+    market_attractiveness: Optional[HealthcareMarketAttractiveness] = Field(
+        default=None,
+        description="Overall Healthcare SaaS Market Attractiveness assessment.",
     )
     confidence: str = Field(
         default=EvidenceConfidence.LOW,
@@ -276,7 +504,6 @@ class PipelineResult(BaseModel):
         default="mock",
         description="Active discovery search provider mode ('mock', 'live', 'tavily', 'searxng').",
     )
-
     rejected_sources: List[DiscoveredSource] = Field(
         default_factory=list,
         description="Discovered sources filtered out as irrelevant during pre-fetch relevance evaluation.",
@@ -293,6 +520,10 @@ class PipelineResult(BaseModel):
         default_factory=list,
         description="Conflicting evidence groups detected.",
     )
+    final_report_sections: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Structured dictionary containing all 20 required Healthcare SaaS report sections.",
+    )
     errors: List[str] = Field(
         default_factory=list,
         description="List of errors encountered during pipeline execution.",
@@ -300,6 +531,10 @@ class PipelineResult(BaseModel):
     warnings: List[str] = Field(
         default_factory=list,
         description="List of pipeline warnings and gaps.",
+    )
+    missing_fields: List[str] = Field(
+        default_factory=list,
+        description="List of missing fields if status is INCOMPLETE_INPUT.",
     )
     audit_trail: List[StateTransitionRecord] = Field(
         default_factory=list,

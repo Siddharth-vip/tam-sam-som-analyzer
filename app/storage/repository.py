@@ -169,6 +169,10 @@ class AnalysisRepository:
             if data.get("final_result"):
                 parsed = _deserialize_from_json(data["final_result"])
                 if isinstance(parsed, dict):
+                    if "pipeline_id" not in parsed:
+                        parsed["pipeline_id"] = analysis_id
+                    if "analysis_id" not in parsed:
+                        parsed["analysis_id"] = analysis_id
                     return parsed
             # Fallback to reconstructing from columns
             for k in (

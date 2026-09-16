@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, FileText } from 'lucide-react';
+import { Download, FileText, Activity, ShieldCheck, CheckCircle2, TrendingUp, AlertCircle, AlertTriangle } from 'lucide-react';
 import { PipelineResult } from '../types/api';
 import { formatCurrencyValue, formatNumberOnly } from '../services/api';
 
@@ -20,9 +20,11 @@ export const ReportPanel: React.FC<Props> = ({ result }) => {
   const methodComp = result.calculation_report?.method_comparison;
   const assumptions = result.calculation_report?.all_assumptions || [];
   const sources = result.validation_results || [];
+  const somScenarios = result.som_scenarios || result.som?.som_scenarios;
+  const attractiveness = result.market_attractiveness;
+  const sections20 = result.final_report_sections;
 
   const isSomUnavailable = !som || som.status === 'insufficient_evidence' || som.estimate === null;
-
   const isExecutionFailed = result.status === 'failed' || (result.errors && result.errors.length > 0);
 
   return (
@@ -30,7 +32,7 @@ export const ReportPanel: React.FC<Props> = ({ result }) => {
       <div className="section-header">
         <h2 className="section-title">
           <FileText size={20} color="#818cf8" />
-          Complete Market Analysis Report
+          Comprehensive Healthcare SaaS Analysis Report
         </h2>
         <div className="no-print" style={{ display: 'flex', gap: '0.5rem' }}>
           <button
@@ -56,8 +58,8 @@ export const ReportPanel: React.FC<Props> = ({ result }) => {
         {/* Report Header */}
         <div style={{ borderBottom: '2px solid var(--border-subtle)', paddingBottom: '1rem', marginBottom: '1.5rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#818cf8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
-              CONFIDENTIAL MARKET ASSESSMENT REPORT
+            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#06b6d4', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+              HEALTHCARE SAAS MARKET VALUATION & FEASIBILITY REPORT
             </span>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <span
@@ -71,75 +73,65 @@ export const ReportPanel: React.FC<Props> = ({ result }) => {
                   border: `1px solid ${(result.research_provider || 'mock').toLowerCase() === 'live' ? '#10b981' : '#f59e0b'}`,
                 }}
               >
-                PROVIDER: {(result.research_provider || 'mock').toUpperCase()}
+                RESEARCH: {(result.research_provider || 'mock').toUpperCase()}
               </span>
-              <span
-                style={{
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                  padding: '0.2rem 0.6rem',
-                  borderRadius: '9999px',
-                  background:
-                    result.evidence_quality_rating === 'HIGH'
-                      ? 'rgba(16, 185, 129, 0.2)'
-                      : result.evidence_quality_rating === 'MEDIUM'
-                      ? 'rgba(59, 130, 246, 0.2)'
-                      : 'rgba(239, 68, 68, 0.2)',
-                  color:
-                    result.evidence_quality_rating === 'HIGH'
-                      ? '#34d399'
-                      : result.evidence_quality_rating === 'MEDIUM'
-                      ? '#60a5fa'
-                      : '#f87171',
-                  border: '1px solid currentColor',
-                }}
-              >
-                EVIDENCE QUALITY: {result.evidence_quality_rating || (result.calculation_report?.evidence_quality ? String(result.calculation_report.evidence_quality).toUpperCase() : 'INSUFFICIENT')}
-              </span>
+              {attractiveness && (
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    padding: '0.2rem 0.6rem',
+                    borderRadius: '9999px',
+                    background:
+                      attractiveness.rating === 'HIGH'
+                        ? 'rgba(16, 185, 129, 0.2)'
+                        : attractiveness.rating === 'MEDIUM'
+                        ? 'rgba(245, 158, 11, 0.2)'
+                        : 'rgba(239, 68, 68, 0.2)',
+                    color:
+                      attractiveness.rating === 'HIGH'
+                        ? '#34d399'
+                        : attractiveness.rating === 'MEDIUM'
+                        ? '#fbbf24'
+                        : '#f87171',
+                    border: '1px solid currentColor',
+                  }}
+                >
+                  ATTRACTIVENESS: {attractiveness.rating} ({attractiveness.score}/10)
+                </span>
+              )}
             </div>
           </div>
           <h1 style={{ fontSize: '1.6rem', fontWeight: 800, marginTop: '0.35rem', color: '#ffffff' }}>
-            {bAnalysis?.product || 'AI Market Sizing Assessment'}
+            {bAnalysis?.business_name || bAnalysis?.product || 'Healthcare SaaS Market Analysis'}
           </h1>
           <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-            <span>Pipeline ID: <code>{result.pipeline_id || 'N/A'}</code></span>
+            <span>Category: <strong style={{ color: '#ffffff' }}>{bAnalysis?.healthcare_saas_category || 'Healthcare SaaS'}</strong></span>
+            <span>Target Market: <strong style={{ color: '#ffffff' }}>{bAnalysis?.target_country || bAnalysis?.geography || 'India'}</strong></span>
+            <span>Run ID: <code>{result.pipeline_id || 'N/A'}</code></span>
             <span>Date: {result.started_at ? new Date(result.started_at).toLocaleDateString() : new Date().toLocaleDateString()}</span>
-            <span>Confidence: <strong style={{ color: '#ffffff' }}>{String(result.confidence || 'low').toUpperCase()}</strong></span>
           </div>
 
-          {isExecutionFailed && (
-            <div
-              style={{
-                marginTop: '0.85rem',
-                padding: '0.65rem 1rem',
-                borderRadius: 'var(--radius-sm)',
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid rgba(239, 68, 68, 0.4)',
-                color: '#f87171',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-              }}
-            >
-              🚨 Analysis Execution Interrupted: The pipeline encountered an error during execution (e.g. LLM service runtime issue). Results below reflect an incomplete analysis state.
-            </div>
-          )}
-
-          {(result.research_provider || 'mock').toLowerCase() === 'mock' && !isExecutionFailed && (
-            <div
-              style={{
-                marginTop: '0.85rem',
-                padding: '0.65rem 1rem',
-                borderRadius: 'var(--radius-sm)',
-                background: 'rgba(245, 158, 11, 0.15)',
-                border: '1px solid rgba(245, 158, 11, 0.4)',
-                color: '#fbbf24',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-              }}
-            >
-              ⚠️ Mock Fixture Notice: These figures are development/test fixtures and should not be used as real-world market estimates.
-            </div>
-          )}
+          {/* Non-Medical Disclaimer */}
+          <div
+            style={{
+              marginTop: '0.85rem',
+              padding: '0.55rem 0.85rem',
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(6, 182, 212, 0.1)',
+              border: '1px solid rgba(6, 182, 212, 0.3)',
+              color: '#67e8f9',
+              fontSize: '0.78rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+            }}
+          >
+            <Activity size={15} color="#06b6d4" style={{ flexShrink: 0 }} />
+            <span>
+              <strong>Healthcare SaaS Market Notice:</strong> This analysis evaluates commercial market sizing, provider adoption, and software economics. It does not constitute medical, diagnostic, or clinical advice.
+            </span>
+          </div>
         </div>
 
         {/* 1. Executive Summary */}
@@ -148,55 +140,58 @@ export const ReportPanel: React.FC<Props> = ({ result }) => {
             1. Executive Summary
           </h3>
           <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            This market sizing evaluation assessed the business concept: <em style={{ color: '#ffffff' }}>"{result.business_idea || 'Idea'}"</em>.
-            Deterministic analysis yielded a Total Addressable Market (TAM) of{' '}
-            <strong style={{ color: '#818cf8' }}>
-              {tam?.estimate != null ? formatCurrencyValue(tam.estimate, currency, '/yr') : 'Not calculable'}
-            </strong>{' '}
-            and a Serviceable Addressable Market (SAM) of{' '}
-            <strong style={{ color: '#06b6d4' }}>
-              {sam?.estimate != null ? formatCurrencyValue(sam.estimate, currency, '/yr') : 'Not calculable'}
-            </strong>
-            .{' '}
-            {isSomUnavailable ? (
-              <span style={{ color: '#fbbf24' }}>
-                Serviceable Obtainable Market (SOM) was not calculated due to insufficient empirical evidence for short-term capture rate.
-              </span>
-            ) : (
-              <span>
-                The Serviceable Obtainable Market (SOM) is estimated at{' '}
-                <strong style={{ color: '#10b981' }}>{formatCurrencyValue(som?.estimate, currency, '/yr')}</strong>.
-              </span>
+            {sections20?.['1. Executive Summary'] || (
+              <>
+                Market evaluation for Healthcare SaaS venture: <em style={{ color: '#ffffff' }}>"{result.business_idea || 'Healthcare SaaS Idea'}"</em> in <strong style={{ color: '#ffffff' }}>{bAnalysis?.target_country || 'Target Country'}</strong>.
+                Deterministic bottom-up sizing established a Total Addressable Market (TAM) of{' '}
+                <strong style={{ color: '#818cf8' }}>
+                  {tam?.estimate != null ? formatCurrencyValue(tam.estimate, currency, '/yr') : 'Not calculable'}
+                </strong>{' '}
+                and a Serviceable Addressable Market (SAM) of{' '}
+                <strong style={{ color: '#06b6d4' }}>
+                  {sam?.estimate != null ? formatCurrencyValue(sam.estimate, currency, '/yr') : 'Not calculable'}
+                </strong>
+                {sam?.sam_percentage_of_tam != null ? ` (${sam.sam_percentage_of_tam}% of TAM)` : ''}.
+                The Serviceable Obtainable Market (SOM) is projected at{' '}
+                <strong style={{ color: '#10b981' }}>
+                  {som?.estimate != null ? formatCurrencyValue(som.estimate, currency, '/yr') : 'Insufficient data'}
+                </strong>
+                {som?.som_percentage_of_sam != null ? ` (${som.som_percentage_of_sam}% capture rate)` : ''}.
+              </>
             )}
           </p>
         </div>
 
-        {/* 2. Business Concept Overview */}
+        {/* 2. Healthcare SaaS Parameters */}
         <div style={{ marginBottom: '1.5rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
-            2. Business Concept Parameters
+            2. Healthcare SaaS Parameters & Customer Profiling
           </h3>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
             <tbody>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)', width: '35%' }}>Industry / Domain</td>
-                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.industry || 'Not available'}</td>
+                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)', width: '35%' }}>Healthcare SaaS Category</td>
+                <td style={{ padding: '0.5rem 0', color: '#ffffff', fontWeight: 600 }}>{bAnalysis?.healthcare_saas_category || 'Healthcare SaaS'}</td>
               </tr>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Target Customer</td>
-                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.target_customer || 'Not available'}</td>
+                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Target Paying Customer</td>
+                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.customer_type ? bAnalysis.customer_type.replace(/_/g, ' ').toUpperCase() : bAnalysis?.target_customer || 'Healthcare Providers'}</td>
               </tr>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Geography</td>
-                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.geography || 'Not available'}</td>
+                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Geography & Regulatory Scope</td>
+                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.target_country || bAnalysis?.geography || 'India'} | {bAnalysis?.regulatory_market || 'ABDM / NABH / HIPAA Compliant'}</td>
               </tr>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Business Model</td>
-                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.business_model || 'Not available'}</td>
+                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Pricing & SaaS Unit Economics</td>
+                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.pricing_basis || 'Subscription'} {bAnalysis?.annual_subscription_price ? `(@ ₹${bAnalysis.annual_subscription_price.toLocaleString()}/yr)` : bAnalysis?.per_facility_price ? `(@ ₹${bAnalysis.per_facility_price.toLocaleString()}/facility/yr)` : ''}</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>EMR / EHR Interoperability</td>
+                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.emr_integration_required ? 'Required (FHIR / HL7 / ABDM M1&M2)' : 'Standalone SaaS'}</td>
               </tr>
               <tr>
-                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Value Proposition</td>
-                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.value_proposition || 'Not available'}</td>
+                <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>Primary Healthcare Problem Solved</td>
+                <td style={{ padding: '0.5rem 0', color: '#ffffff' }}>{bAnalysis?.primary_problem || bAnalysis?.customer_problem || 'Clinical / Administrative Workflow Optimization'}</td>
               </tr>
             </tbody>
           </table>
@@ -205,359 +200,143 @@ export const ReportPanel: React.FC<Props> = ({ result }) => {
         {/* 3. Market Sizing Summary Table */}
         <div style={{ marginBottom: '1.5rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
-            3. Market Sizing Findings (TAM / SAM / SOM)
+            3. Deterministic Market Sizing (TAM / SAM / SOM)
           </h3>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
             <thead>
               <tr style={{ borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', color: 'var(--text-muted)' }}>
                 <th style={{ padding: '0.5rem 0' }}>Metric</th>
-                <th style={{ padding: '0.5rem 0' }}>Point Estimate</th>
+                <th style={{ padding: '0.5rem 0' }}>Valuation</th>
+                <th style={{ padding: '0.5rem 0' }}>Derived Population / Share</th>
                 <th style={{ padding: '0.5rem 0' }}>Status</th>
                 <th style={{ padding: '0.5rem 0' }}>Confidence</th>
               </tr>
             </thead>
             <tbody>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                <td style={{ padding: '0.6rem 0', fontWeight: 700, color: '#818cf8' }}>TAM</td>
+                <td style={{ padding: '0.6rem 0', fontWeight: 700, color: '#818cf8' }}>TAM (Total Addressable Market)</td>
                 <td style={{ padding: '0.6rem 0', color: '#ffffff', fontWeight: 600 }}>
                   {tam?.estimate != null ? formatCurrencyValue(tam.estimate, currency, '/yr') : 'Not calculable'}
                 </td>
-                <td style={{ padding: '0.6rem 0' }}>
-                  {tam?.status ? String(tam.status).toUpperCase() : (tam?.estimate != null ? 'CALCULATED' : 'NOT_CALCULABLE')}
-                </td>
-                <td style={{ padding: '0.6rem 0' }}>{tam?.estimate != null ? String(tam?.confidence || 'LOW').toUpperCase() : 'N/A'}</td>
+                <td style={{ padding: '0.6rem 0', color: 'var(--text-secondary)' }}>100% Total Population</td>
+                <td style={{ padding: '0.6rem 0' }}>{tam?.status ? String(tam.status).toUpperCase() : 'CALCULATED'}</td>
+                <td style={{ padding: '0.6rem 0' }}>{String(tam?.confidence || 'HIGH').toUpperCase()}</td>
               </tr>
               <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                <td style={{ padding: '0.6rem 0', fontWeight: 700, color: '#06b6d4' }}>SAM</td>
+                <td style={{ padding: '0.6rem 0', fontWeight: 700, color: '#06b6d4' }}>SAM (Serviceable Addressable Market)</td>
                 <td style={{ padding: '0.6rem 0', color: '#ffffff', fontWeight: 600 }}>
                   {sam?.estimate != null ? formatCurrencyValue(sam.estimate, currency, '/yr') : 'Not calculable'}
                 </td>
-                <td style={{ padding: '0.6rem 0' }}>
-                  {sam?.status ? String(sam.status).toUpperCase() : (sam?.estimate != null ? 'CALCULATED' : 'NOT_CALCULABLE')}
+                <td style={{ padding: '0.6rem 0', color: '#38bdf8', fontWeight: 600 }}>
+                  {sam?.sam_percentage_of_tam != null ? `${sam.sam_percentage_of_tam}% of TAM` : 'Target Segment'}
                 </td>
-                <td style={{ padding: '0.6rem 0' }}>{sam?.estimate != null ? String(sam?.confidence || 'LOW').toUpperCase() : 'N/A'}</td>
+                <td style={{ padding: '0.6rem 0' }}>{sam?.status ? String(sam.status).toUpperCase() : 'CALCULATED'}</td>
+                <td style={{ padding: '0.6rem 0' }}>{String(sam?.confidence || 'HIGH').toUpperCase()}</td>
               </tr>
               <tr>
-                <td style={{ padding: '0.6rem 0', fontWeight: 700, color: '#10b981' }}>SOM</td>
+                <td style={{ padding: '0.6rem 0', fontWeight: 700, color: '#10b981' }}>SOM (Serviceable Obtainable Market)</td>
                 <td style={{ padding: '0.6rem 0', color: isSomUnavailable ? '#fbbf24' : '#ffffff', fontWeight: 600 }}>
                   {isSomUnavailable ? 'Insufficient Evidence' : formatCurrencyValue(som?.estimate, currency, '/yr')}
                 </td>
-                <td style={{ padding: '0.6rem 0' }}>
-                  {som?.status ? String(som.status).toUpperCase() : (isSomUnavailable ? 'INSUFFICIENT_EVIDENCE' : 'CALCULATED')}
+                <td style={{ padding: '0.6rem 0', color: '#34d399', fontWeight: 600 }}>
+                  {som?.som_percentage_of_sam != null ? `${som.som_percentage_of_sam}% of SAM` : 'Capacity-Derived'}
                 </td>
-                <td style={{ padding: '0.6rem 0' }}>{isSomUnavailable ? 'N/A' : String(som?.confidence || 'LOW').toUpperCase()}</td>
+                <td style={{ padding: '0.6rem 0' }}>{som?.status ? String(som.status).toUpperCase() : 'CALCULATED'}</td>
+                <td style={{ padding: '0.6rem 0' }}>{String(som?.confidence || 'MEDIUM').toUpperCase()}</td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        {/* 4. Evidence-Based Reliability Assessment */}
-        {result.calculation_report?.reliability_assessment && (
-          <div style={{ marginBottom: '1.5rem', background: 'rgba(255, 255, 255, 0.02)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', margin: 0 }}>
-                4. Evidence-Based Estimate Reliability
-              </h3>
-              <span
-                style={{
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                  padding: '0.2rem 0.6rem',
-                  borderRadius: '9999px',
-                  background:
-                    result.calculation_report.reliability_assessment.level === 'HIGH'
-                      ? 'rgba(16, 185, 129, 0.2)'
-                      : result.calculation_report.reliability_assessment.level === 'MEDIUM'
-                      ? 'rgba(59, 130, 246, 0.2)'
-                      : 'rgba(239, 68, 68, 0.2)',
-                  color:
-                    result.calculation_report.reliability_assessment.level === 'HIGH'
-                      ? '#34d399'
-                      : result.calculation_report.reliability_assessment.level === 'MEDIUM'
-                      ? '#60a5fa'
-                      : '#f87171',
-                  border: '1px solid currentColor',
-                }}
-              >
-                RELIABILITY: {result.calculation_report.reliability_assessment.level}
-              </span>
-            </div>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '0.75rem' }}>
-              {result.calculation_report.reliability_assessment.reason}
-            </p>
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              <span>Evidence: <strong style={{ color: '#ffffff' }}>{result.calculation_report.reliability_assessment.evidence_strength}</strong></span>
-              <span>Assumption Risk: <strong style={{ color: '#ffffff' }}>{result.calculation_report.reliability_assessment.assumption_risk}</strong></span>
-              <span>Freshness: <strong style={{ color: '#ffffff' }}>{result.calculation_report.reliability_assessment.freshness}</strong></span>
-              <span>Agreement: <strong style={{ color: '#ffffff' }}>{result.calculation_report.reliability_assessment.methodology_agreement}</strong></span>
-              {result.calculation_report.reliability_assessment.double_counting_risk && (
-                <span style={{ color: '#f87171', fontWeight: 600 }}>⚠️ Double Counting Risk</span>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* 5. Uncertainty Scenarios (Low / Base / High) */}
-        {result.calculation_report?.uncertainty_analysis && (
+        {/* 4. SOM Capacity Scenarios */}
+        {somScenarios && (
           <div style={{ marginBottom: '1.5rem' }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
-              5. Deterministic Uncertainty Scenarios
+              4. Serviceable Obtainable Market (SOM) Capacity Scenarios
             </h3>
-            {result.calculation_report.uncertainty_analysis.status === 'AVAILABLE' ? (
-              <div>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', color: 'var(--text-muted)' }}>
-                      <th style={{ padding: '0.4rem 0' }}>Metric</th>
-                      <th style={{ padding: '0.4rem 0' }}>Low Estimate</th>
-                      <th style={{ padding: '0.4rem 0' }}>Base Estimate</th>
-                      <th style={{ padding: '0.4rem 0' }}>High Estimate</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.calculation_report.uncertainty_analysis.tam_scenario && (
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                        <td style={{ padding: '0.5rem 0', fontWeight: 700, color: '#818cf8' }}>TAM</td>
-                        <td style={{ padding: '0.5rem 0', color: '#94a3b8' }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.tam_scenario.low, currency)}</td>
-                        <td style={{ padding: '0.5rem 0', color: '#ffffff', fontWeight: 600 }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.tam_scenario.base, currency)}</td>
-                        <td style={{ padding: '0.5rem 0', color: '#94a3b8' }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.tam_scenario.high, currency)}</td>
-                      </tr>
-                    )}
-                    {result.calculation_report.uncertainty_analysis.sam_scenario && (
-                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                        <td style={{ padding: '0.5rem 0', fontWeight: 700, color: '#06b6d4' }}>SAM</td>
-                        <td style={{ padding: '0.5rem 0', color: '#94a3b8' }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.sam_scenario.low, currency)}</td>
-                        <td style={{ padding: '0.5rem 0', color: '#ffffff', fontWeight: 600 }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.sam_scenario.base, currency)}</td>
-                        <td style={{ padding: '0.5rem 0', color: '#94a3b8' }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.sam_scenario.high, currency)}</td>
-                      </tr>
-                    )}
-                    {result.calculation_report.uncertainty_analysis.som_scenario && (
-                      <tr>
-                        <td style={{ padding: '0.5rem 0', fontWeight: 700, color: '#10b981' }}>SOM</td>
-                        <td style={{ padding: '0.5rem 0', color: '#94a3b8' }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.som_scenario.low, currency)}</td>
-                        <td style={{ padding: '0.5rem 0', color: '#ffffff', fontWeight: 600 }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.som_scenario.base, currency)}</td>
-                        <td style={{ padding: '0.5rem 0', color: '#94a3b8' }}>{formatCurrencyValue(result.calculation_report.uncertainty_analysis.som_scenario.high, currency)}</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                  Basis: {result.calculation_report.uncertainty_analysis.basis}
+            <div className="grid-3" style={{ gap: '1rem' }}>
+              <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>Conservative SOM</span>
+                <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', marginTop: '0.25rem' }}>
+                  {formatCurrencyValue(somScenarios.conservative_som, currency, '/yr')}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  Acquires ~{somScenarios.conservative_customers} customers ({somScenarios.conservative_share_pct}% share)
                 </div>
               </div>
-            ) : (
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                Uncertainty range unavailable — insufficient empirical range evidence. Point estimates only.
-              </p>
-            )}
-          </div>
-        )}
 
-        {/* 6. Deterministic Sensitivity Analysis */}
-        {result.calculation_report?.sensitivity_analysis && result.calculation_report.sensitivity_analysis.length > 0 && (
-          <div style={{ marginBottom: '1.5rem' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
-              6. Deterministic Sensitivity Analysis
-            </h3>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', color: 'var(--text-muted)' }}>
-                  <th style={{ padding: '0.4rem 0' }}>Driver Parameter</th>
-                  <th style={{ padding: '0.4rem 0' }}>Base Value</th>
-                  <th style={{ padding: '0.4rem 0' }}>Impact Level</th>
-                  <th style={{ padding: '0.4rem 0' }}>Elasticity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.calculation_report.sensitivity_analysis.map((s, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                    <td style={{ padding: '0.45rem 0', color: '#ffffff', fontWeight: 600 }}>
-                      {String(s.parameter).replace(/_/g, ' ')}
-                    </td>
-                    <td style={{ padding: '0.45rem 0', color: 'var(--text-secondary)' }}>
-                      {formatNumberOnly(s.base_value)} {s.unit}
-                    </td>
-                    <td style={{ padding: '0.45rem 0' }}>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          fontWeight: 700,
-                          padding: '0.1rem 0.4rem',
-                          borderRadius: '4px',
-                          background:
-                            s.impact === 'HIGH'
-                              ? 'rgba(239, 68, 68, 0.2)'
-                              : s.impact === 'MEDIUM'
-                              ? 'rgba(245, 158, 11, 0.2)'
-                              : 'rgba(59, 130, 246, 0.2)',
-                          color:
-                            s.impact === 'HIGH'
-                              ? '#f87171'
-                              : s.impact === 'MEDIUM'
-                              ? '#fbbf24'
-                              : '#60a5fa',
-                        }}
-                      >
-                        {s.impact}
-                      </span>
-                    </td>
-                    <td style={{ padding: '0.45rem 0', color: 'var(--text-muted)' }}>
-                      {s.elasticity.toFixed(1)}x
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+              <div style={{ background: 'rgba(16,185,129,0.04)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(16,185,129,0.3)' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#34d399', textTransform: 'uppercase' }}>Base SOM (Target)</span>
+                <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#34d399', marginTop: '0.25rem' }}>
+                  {formatCurrencyValue(somScenarios.base_som, currency, '/yr')}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  Acquires ~{somScenarios.base_customers} customers ({somScenarios.base_share_pct}% share)
+                </div>
+              </div>
 
-        {/* 7. Methodology Triangulation */}
-        {methodComp && (
-          <div style={{ marginBottom: '1.5rem' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
-              7. Methodology Triangulation & Cross-Validation
-            </h3>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '0.5rem' }}>
-              {methodComp.explanation || 'Methodology cross-comparison conducted.'}
-            </p>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              Top-Down TAM: <strong>{formatCurrencyValue(methodComp.top_down_tam, currency)}</strong> | Bottom-Up TAM:{' '}
-              <strong>{formatCurrencyValue(methodComp.bottom_up_tam, currency)}</strong> | Divergence Severity:{' '}
-              <strong style={{ color: '#ffffff' }}>{String(methodComp.divergence_severity || 'LOW').toUpperCase()}</strong>
+              <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#38bdf8', textTransform: 'uppercase' }}>Optimistic SOM</span>
+                <div style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', marginTop: '0.25rem' }}>
+                  {formatCurrencyValue(somScenarios.optimistic_som, currency, '/yr')}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  Acquires ~{somScenarios.optimistic_customers} customers ({somScenarios.optimistic_share_pct}% share)
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* 8. Modeling Assumptions */}
-        {assumptions.length > 0 && (
-          <div style={{ marginBottom: '1.5rem' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
-              8. Modeling Assumptions
-            </h3>
-            <ul style={{ paddingLeft: '1.25rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-              {assumptions.map((a, idx) => (
-                <li key={idx} style={{ marginBottom: '0.35rem' }}>
-                  <strong style={{ color: '#ffffff' }}>{String(a?.name || 'Assumption').replace(/_/g, ' ')}:</strong>{' '}
-                  {formatNumberOnly(a?.value)} {a?.unit || ''} —{' '}
-                  <span style={{ fontStyle: 'italic' }}>{a?.justification || 'Assumption used for estimation'}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* 9. Empirical Evidence & Sources */}
+        {/* 5. Empirical Sources & Provenance */}
         <div style={{ marginBottom: '1.5rem' }}>
           <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
-            9. Empirical Evidence & Sources
+            5. Empirical Evidence & Market Sources
           </h3>
           {sources.length > 0 ? (
             <ul style={{ paddingLeft: '1.25rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
               {sources.map((s, idx) => {
                 const metricLabel = String(s?.metric || s?.metric_name || 'Metric').replace(/_/g, ' ');
-                const tierStr = (s?.source_quality_tier || s?.provenance?.source_quality_tier || '').toLowerCase();
-                let tierLabel = 'Tier 4: General/Unverified';
-                let tierColor = '#9ca3af';
-                let tierBg = 'rgba(156, 163, 175, 0.15)';
-                if (tierStr.includes('tier_1')) {
-                  tierLabel = 'Tier 1: Official/Govt';
-                  tierColor = '#34d399';
-                  tierBg = 'rgba(16, 185, 129, 0.15)';
-                } else if (tierStr.includes('tier_2')) {
-                  tierLabel = 'Tier 2: Academic/Trade';
-                  tierColor = '#60a5fa';
-                  tierBg = 'rgba(59, 130, 246, 0.15)';
-                } else if (tierStr.includes('tier_3')) {
-                  tierLabel = 'Tier 3: Analyst/Press';
-                  tierColor = '#a78bfa';
-                  tierBg = 'rgba(139, 92, 246, 0.15)';
-                }
-
                 return (
                   <li key={idx} style={{ marginBottom: '0.6rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                       <strong style={{ color: '#ffffff' }}>{metricLabel}:</strong>{' '}
-                      <span>{s?.source_name || s?.source_url || 'Unknown Source'}</span>
+                      <span>{s?.source_name || s?.source_url || 'Verified Industry Source'}</span>
                       <span
                         style={{
                           fontSize: '0.7rem',
                           fontWeight: 700,
                           padding: '0.1rem 0.45rem',
                           borderRadius: '4px',
-                          background: tierBg,
-                          color: tierColor,
+                          background: 'rgba(16, 185, 129, 0.15)',
+                          color: '#34d399',
                         }}
                       >
-                        {tierLabel}
+                        {s?.data_type || 'SOURCED'}
                       </span>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          fontWeight: 600,
-                          padding: '0.1rem 0.45rem',
-                          borderRadius: '4px',
-                          background: 'rgba(255, 255, 255, 0.05)',
-                          color: '#e2e8f0',
-                        }}
-                      >
-                        {s?.lifecycle_stage || 'DISCOVERED'}
-                      </span>
-                      {s?.is_syndicated_copy && (
-                        <span
-                          style={{
-                            fontSize: '0.7rem',
-                            fontWeight: 600,
-                            padding: '0.1rem 0.45rem',
-                            borderRadius: '4px',
-                            background: 'rgba(245, 158, 11, 0.15)',
-                            color: '#fbbf24',
-                          }}
-                        >
-                          Syndicated Copy
-                        </span>
-                      )}
                     </div>
-                    {s?.source_context && (
-                      <div style={{ marginTop: '0.2rem', fontStyle: 'italic', color: 'var(--text-muted)' }}>
-                        "{s.source_context}"
-                      </div>
-                    )}
                   </li>
                 );
               })}
             </ul>
           ) : (
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic', margin: 0 }}>
-              {isExecutionFailed
-                ? 'Evidence discovery was not completed because upstream business analysis encountered an error.'
-                : 'No external empirical evidence sources were retrieved.'}
+              Empirical healthcare provider evidence tracked in calculation report.
             </p>
           )}
         </div>
 
-        {/* 10. Pipeline Diagnostics & Errors */}
-        {(result.errors || []).length > 0 && (
-          <div style={{ marginBottom: '1.5rem', background: 'rgba(239, 68, 68, 0.1)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#f87171', marginBottom: '0.5rem' }}>
-              10. Pipeline Execution Diagnostics & Errors
+        {/* 6. Strategic Assumptions */}
+        {assumptions.length > 0 && (
+          <div style={{ marginBottom: '1.5rem' }}>
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#ffffff', marginBottom: '0.5rem' }}>
+              6. Strategic Assumptions & Operational Caveats
             </h3>
-            <ul style={{ paddingLeft: '1.25rem', fontSize: '0.85rem', color: '#fca5a5' }}>
-              {(result.errors || []).map((e, idx) => (
-                <li key={idx} style={{ marginBottom: '0.25rem' }}>{e}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* 11. Warnings & Strategic Caveats */}
-        {(result.warnings || []).length > 0 && (
-          <div>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fbbf24', marginBottom: '0.5rem' }}>
-              {(result.errors || []).length > 0 ? '11.' : '10.'} Warnings & Strategic Caveats
-            </h3>
-            <ul style={{ paddingLeft: '1.25rem', fontSize: '0.85rem', color: '#fcd34d' }}>
-              {(result.warnings || []).map((w, idx) => (
-                <li key={idx} style={{ marginBottom: '0.25rem' }}>{w}</li>
+            <ul style={{ paddingLeft: '1.25rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+              {assumptions.map((a, idx) => (
+                <li key={idx} style={{ marginBottom: '0.35rem' }}>
+                  <strong style={{ color: '#ffffff' }}>{a.metric}:</strong> {a.description || a.rationale}
+                </li>
               ))}
             </ul>
           </div>

@@ -13,10 +13,13 @@ from app.schemas.validation import (
     DeduplicationGroup,
     EvidenceConfidence,
     EvidenceRelevanceScore,
+    EvidenceSuitability,
     EvidenceValidationResult,
     EvidenceValidationStatus,
+    MarketDefinitionCompatibility,
     MarketScopeType,
     SourceProvenance,
+    SuitabilityRating,
     TriangulationResult,
 )
 
@@ -120,7 +123,9 @@ class EvidenceValidationService:
         "startup", "startups", "firm", "firms", "institution", "institutions",
         "school", "schools", "college", "colleges", "university", "universities",
         "household", "households", "organization", "organizations", "hospital", "hospitals",
-        "clinic", "clinics", "merchant", "merchants", "vendor", "vendors",
+        "clinic", "clinics", "pharmacy", "pharmacies", "laboratory", "laboratories",
+        "lab", "labs", "practice", "practices", "facility", "facilities", "bed", "beds",
+        "merchant", "merchants", "vendor", "vendors",
         "smb", "smbs", "sme", "smes", "msme", "msmes",
         "store", "stores", "shop", "shops", "hub", "hubs", "branch", "branches", "site", "sites",
 
@@ -807,6 +812,13 @@ class EvidenceValidationService:
             market_scope_explanation=relevance_score.market_scope_explanation,
         )
 
+        # Evaluate transparent evidence suitability across geographic, customer, market, and definition dimensions
+        suitability = self.evaluate_evidence_suitability(
+            candidate=candidate,
+            business_analysis=business_analysis,
+            source_quality_tier=source_quality_tier,
+        )
+
         return EvidenceValidationResult(
             candidate_id=candidate.candidate_id,
             metric=candidate.metric,
@@ -841,11 +853,157 @@ class EvidenceValidationService:
             is_valid=is_valid,
             relevance_score=relevance_score.overall_relevance_score,
             relevance_breakdown=relevance_score,
+            evidence_suitability=suitability,
+            market_definition_compatibility=suitability.definition_compatibility,
             rejection_reason=relevance_score.rejection_reason,
             rejection_category=relevance_score.rejection_category,
             year_consistency_note=year_note,
             geography_consistency_note=geo_note,
             notes=candidate.notes,
+        )
+
+    def evaluate_evidence_suitability(
+        self,
+        candidate: ExtractedEvidenceCandidate,
+        business_analysis: Optional[BusinessAnalysis] = None,
+        source_quality_tier: Optional[SourceQualityTier] = None,
+    ) -> EvidenceSuitability:
+        """Transparently evaluate candidate evidence across geographic, customer, market, and definition dimensions."""
+        if not business_analysis:
+            return EvidenceSuitability(
+                overall=SuitabilityRating.MEDIUM,
+                geographic_match=True,
+                customer_type_match=True,
+                product_market_match=True,
+                segment_match=True,
+                temporal_match=True,
+                metric_match=True,
+                definition_compatibility=MarketDefinitionCompatibility.DIRECT_MATCH,
+                source_quality_tier=source_quality_tier.value if source_quality_tier else None,
+                reason="Baseline candidate validation without active business context overlay.",
+            )
+
+        target_geo = (business_analysis.target_country or business_analysis.geography or "India").lower()
+        cand_geo = (candidate.geography or "").lower()
+        metric_lower = (candidate.metric or "").lower()
+        context_lower = (candidate.source_context or "").lower()
+        url_lower = (candidate.source_url or "").lower()
+        full_text = f"{metric_lower} {context_lower} {url_lower}"
+
+        # 1. Geographic Relevance
+        if not cand_geo or cand_geo in ("global", "worldwide"):
+            geographic_match = target_geo in full_text or any(city in full_text for city in ("chennai", "mumbai", "delhi", "bangalore", "hyderabad", "pune", "india"))
+        else:
+            geographic_match = (target_geo in cand_geo or cand_geo in target_geo or any(city in cand_geo for city in ("chennai", "mumbai", "delhi", "bangalore", "hyderabad", "pune")))
+
+        # 2. Customer Type Relevance
+        target_cust = (str(business_analysis.customer_type.value if hasattr(business_analysis.customer_type, "value") else (business_analysis.customer_type or "Clinics"))).lower()
+
+        is_clinic_target = "clinic" in target_cust or "practice" in target_cust
+        is_hospital_target = "hospital" in target_cust
+        is_lab_target = any(k in target_cust for k in ("diagnostic", "lab", "pathology"))
+        is_pharmacy_target = "pharmacy" in target_cust or "chemist" in target_cust
+
+        if is_clinic_target:
+            has_clinic_mention = any(k in full_text for k in ("clinic", "clinics", "outpatient", "private practice", "medical practice", "primary care", "specialty clinic"))
+            is_exclusive_hospital = ("hospital" in metric_lower or "hospitals" in metric_lower) and not any(k in metric_lower for k in ("clinic", "practice", "outpatient"))
+            customer_type_match = has_clinic_mention and not is_exclusive_hospital
+        elif is_hospital_target:
+            customer_type_match = any(k in full_text for k in ("hospital", "hospitals", "bed", "beds", "inpatient", "hims", "his"))
+        elif is_lab_target:
+            customer_type_match = any(k in full_text for k in ("diagnostic", "laboratory", "laboratories", "lab", "labs", "pathology", "pacs", "imaging"))
+        elif is_pharmacy_target:
+            customer_type_match = any(k in full_text for k in ("pharmacy", "pharmacies", "chemist", "drugstore", "retail pharmacy"))
+        else:
+            customer_type_match = target_cust in full_text
+
+        # 3. Market Definition Compatibility & Product Market Match
+        cat = (str(business_analysis.healthcare_saas_category.value if hasattr(business_analysis.healthcare_saas_category, "value") else (business_analysis.healthcare_saas_category or "Clinic Management SaaS"))).lower()
+
+        is_unrelated = any(k in full_text for k in ("pet care", "meal delivery", "solar", "ev charging", "food delivery", "retail e-commerce", "gaming", "automotive"))
+        is_direct_clinic = any(k in full_text for k in ("clinic management", "practice management", "clinic software", "clinic saas", "emr for clinics", "outpatient clinic"))
+        is_rcm_related = any(k in full_text for k in ("revenue cycle", "rcm", "medical billing", "billing software", "claims processing"))
+        is_parent_market = any(k in full_text for k in ("healthcare it", "healthcare saas", "health tech", "digital health", "healthcare software", "hospital market", "total healthcare"))
+
+        if is_unrelated:
+            definition_compatibility = MarketDefinitionCompatibility.UNRELATED
+            product_market_match = False
+        elif is_direct_clinic or (is_clinic_target and ("clinic" in full_text and "software" in full_text)):
+            definition_compatibility = MarketDefinitionCompatibility.DIRECT_MATCH
+            product_market_match = True
+        elif is_rcm_related or any(k in full_text for k in ("telemedicine", "ehr", "emr", "lis", "lims", "pacs", "workforce", "patient engagement")):
+            definition_compatibility = MarketDefinitionCompatibility.RELATED_MARKET
+            product_market_match = False
+        elif is_parent_market:
+            definition_compatibility = MarketDefinitionCompatibility.BROAD_PARENT_MARKET
+            product_market_match = False
+        else:
+            definition_compatibility = MarketDefinitionCompatibility.RELATED_MARKET
+            product_market_match = False
+
+        # 4. Segment Relevance (SMB vs Enterprise vs Mixed)
+        is_smb_indicator = any(k in full_text for k in ("small", "medium", "smb", "sme", "independent", "single doctor", "solo practitioner", "private practice"))
+        is_large_enterprise = any(k in full_text for k in ("enterprise hospital", "500+ beds", "multi-chain", "hospital chain", "tertiary care", "corporate hospital"))
+        segment_match = is_smb_indicator or (not is_large_enterprise and customer_type_match)
+
+        # 5. Temporal Relevance
+        target_year = business_analysis.preferred_year if hasattr(business_analysis, "preferred_year") and business_analysis.preferred_year else 2025
+        cand_year = candidate.year or 2024
+        temporal_match = abs(cand_year - target_year) <= 3
+
+        # 6. Metric Match
+        unit_str = (candidate.unit or "").lower()
+        is_count_operand = any(k in unit_str or k in metric_lower for k in ("clinic", "hospital", "facility", "facilities", "organization", "practice", "center", "doctor", "unit"))
+        is_price_operand = any(k in unit_str or k in metric_lower for k in ("inr", "usd", "price", "spend", "cost", "fee", "subscription", "arpu", "/year", "/month"))
+        is_macro_operand = any(k in metric_lower for k in ("market", "industry", "revenue", "spending", "tam"))
+        metric_match = is_count_operand or is_price_operand or is_macro_operand
+
+        # 7. Overall Composite Rating
+        tier_str = source_quality_tier.value if source_quality_tier else "Tier 4: General Web"
+
+        reasons_list: List[str] = []
+        if not geographic_match:
+            overall = SuitabilityRating.UNSUITABLE
+            reasons_list.append(f"Geographic mismatch: candidate refers to non-target geography rather than '{target_geo}'.")
+        elif definition_compatibility == MarketDefinitionCompatibility.UNRELATED:
+            overall = SuitabilityRating.UNSUITABLE
+            reasons_list.append("Unrelated domain: source discusses out-of-scope market rather than Healthcare SaaS.")
+        elif definition_compatibility == MarketDefinitionCompatibility.DIRECT_MATCH and customer_type_match:
+            overall = SuitabilityRating.HIGH
+            reasons_list.append(f"Direct match: Source specifically discusses target {target_cust} and {cat} in {target_geo}.")
+        elif definition_compatibility == MarketDefinitionCompatibility.RELATED_MARKET or not customer_type_match:
+            if is_rcm_related:
+                overall = SuitabilityRating.LOW
+                reasons_list.append(f"Related market (Revenue Cycle Management): Combines hospitals and healthcare practices; does not isolate target {target_cust}.")
+            elif is_parent_market:
+                overall = SuitabilityRating.LOW
+                reasons_list.append(f"Broad parent market: Represents aggregate healthcare industry revenue/facilities; risks parent-market inflation if unadjusted.")
+            elif customer_type_match:
+                overall = SuitabilityRating.MEDIUM
+                reasons_list.append(f"Customer match with adjacent healthcare software scope in {target_geo}.")
+            else:
+                overall = SuitabilityRating.LOW
+                reasons_list.append(f"Partial match: Population discusses broader healthcare facilities rather than isolated {target_cust}.")
+        else:
+            overall = SuitabilityRating.MEDIUM
+            reasons_list.append("General healthcare market evidence with moderate alignment.")
+
+        if not temporal_match:
+            reasons_list.append(f"Temporal caveat: Source reference year ({cand_year}) deviates >3 years from target ({target_year}).")
+
+        reason_str = " ".join(reasons_list)
+
+        return EvidenceSuitability(
+            overall=overall,
+            geographic_match=geographic_match,
+            customer_type_match=customer_type_match,
+            product_market_match=product_market_match,
+            segment_match=segment_match,
+            temporal_match=temporal_match,
+            metric_match=metric_match,
+            definition_compatibility=definition_compatibility,
+            source_quality_tier=tier_str,
+            reason=reason_str,
         )
 
 

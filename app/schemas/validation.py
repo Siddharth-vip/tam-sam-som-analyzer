@@ -41,6 +41,47 @@ class MarketScopeType(str, Enum):
     UNRELATED_MARKET = "Unrelated market"
 
 
+class MarketDefinitionCompatibility(str, Enum):
+    """Categorical compatibility between researched evidence market definition and the business idea."""
+
+    DIRECT_MATCH = "DIRECT_MATCH"
+    RELATED_MARKET = "RELATED_MARKET"
+    BROAD_PARENT_MARKET = "BROAD_PARENT_MARKET"
+    UNRELATED = "UNRELATED"
+
+
+class SuitabilityRating(str, Enum):
+    """Transparent overall evidence suitability classification."""
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    UNSUITABLE = "UNSUITABLE"
+
+
+class EvidenceSuitability(BaseModel):
+    """Structured, transparent evaluation of evidence relevance and market definition suitability."""
+
+    model_config = ConfigDict(extra="ignore", use_enum_values=True)
+
+    overall: SuitabilityRating = Field(
+        default=SuitabilityRating.LOW,
+        description="Composite categorical suitability rating (HIGH, MEDIUM, LOW, UNSUITABLE).",
+    )
+    geographic_match: bool = Field(default=True, description="Whether the evidence matches the target geography.")
+    customer_type_match: bool = Field(default=False, description="Whether the evidence specifically describes the target customer paying entity.")
+    product_market_match: bool = Field(default=False, description="Whether the product/SaaS offering directly aligns with the evidence domain.")
+    segment_match: bool = Field(default=False, description="Whether the target customer segment/size aligns.")
+    temporal_match: bool = Field(default=True, description="Whether the reference year is temporally relevant (within ±3 years).")
+    metric_match: bool = Field(default=True, description="Whether the unit/metric represents a valid customer count or ARPU operand.")
+    definition_compatibility: MarketDefinitionCompatibility = Field(
+        default=MarketDefinitionCompatibility.RELATED_MARKET,
+        description="Classification of market definition alignment (DIRECT_MATCH, RELATED_MARKET, BROAD_PARENT_MARKET, UNRELATED).",
+    )
+    source_quality_tier: Optional[str] = Field(default=None, description="Tier ranking of the publishing source.")
+    reason: str = Field(..., description="Explainable audit reasoning detailing the suitability evaluation.")
+
+
 class EvidenceRelevanceScore(BaseModel):
     """Multi-dimensional relevance and quality score assessing evidence suitability for TAM/SAM/SOM."""
 
@@ -178,6 +219,14 @@ class EvidenceValidationResult(BaseModel):
     relevance_breakdown: Optional[EvidenceRelevanceScore] = Field(
         default=None,
         description="Detailed multi-dimensional relevance and suitability assessment.",
+    )
+    evidence_suitability: Optional[EvidenceSuitability] = Field(
+        default=None,
+        description="Transparent evidence suitability evaluation across geographic, customer, market, and definition dimensions.",
+    )
+    market_definition_compatibility: Optional[MarketDefinitionCompatibility] = Field(
+        default=None,
+        description="Market definition alignment category (DIRECT_MATCH, RELATED_MARKET, BROAD_PARENT_MARKET, UNRELATED).",
     )
     market_scope: Optional[MarketScopeType] = Field(
         default=None,

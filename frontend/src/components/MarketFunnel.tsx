@@ -57,7 +57,9 @@ export const MarketFunnel: React.FC<Props> = ({ tam, sam, som, currency = 'INR' 
             </div>
           </div>
           <span className="badge badge-info" style={{ fontSize: '0.8rem' }}>
-            100% Demand Base
+            {tam?.inputs?.potential_customers?.value != null
+              ? `${Number(tam.inputs.potential_customers.value).toLocaleString()} Potential Customers`
+              : '100% Demand Base'}
           </span>
         </div>
 
@@ -95,7 +97,9 @@ export const MarketFunnel: React.FC<Props> = ({ tam, sam, som, currency = 'INR' 
             </div>
           </div>
           <span className="badge" style={{ background: 'rgba(6, 182, 212, 0.15)', color: '#67e8f9', border: '1px solid rgba(6,182,212,0.3)' }}>
-            Serviceable Scope
+            {sam?.serviceable_customer_count != null
+              ? `${Number(sam.serviceable_customer_count).toLocaleString()} Serviceable Customers`
+              : 'Serviceable Scope'}
           </span>
         </div>
 
@@ -143,6 +147,11 @@ export const MarketFunnel: React.FC<Props> = ({ tam, sam, som, currency = 'INR' 
               {somVal != null ? formatCurrencyValue(somVal, activeCurrency, '/yr') : 'Insufficient Evidence'}
             </div>
           </div>
+          {somVal != null && som?.obtainable_customer_count != null && (
+            <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#6ee7b7', border: '1px solid rgba(16,185,129,0.3)' }}>
+              {Number(som.obtainable_customer_count).toLocaleString()} Obtainable Customers
+            </span>
+          )}
           {somVal == null && (
             <span
               title="Obtainable market share was not backed by empirical source or explicit assumption."

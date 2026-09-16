@@ -18,9 +18,11 @@ from app.schemas.calculation import (
     CalculationStatus,
     CalculationStep,
     CalculationTrace,
+    DataType,
     DivergenceSeverity,
     EvidenceInput,
     EvidenceQualityRating,
+    format_market_display_value,
     FreshnessCategory,
     MethodComparison,
     MetricCalculationResult,
@@ -251,6 +253,38 @@ class CalculationService:
                 "Without evidence-backed segmentation percentages, using broad parent industry revenue risks parent-market inflation."
             )
 
+        # Structured input provenance dictionary
+        structured_inputs: Dict[str, Any] = {
+            "macro_market_size": {
+                "value": macro.value,
+                "unit": macro.unit,
+                "currency": macro.currency,
+                "data_type": macro.data_type or (DataType.ESTIMATED.value if macro.is_assumption else DataType.SOURCED.value),
+                "source": macro.source_name or macro.source_title or ("User Input" if macro.is_user_provided else "Market Report"),
+                "source_url": macro.source_url,
+                "published_year": macro.published_year or macro.year,
+                "confidence": str(macro.confidence or "medium").lower(),
+                "notes": macro.assumption_justification or None,
+            }
+        }
+        formula_parts = [macro.name or "macro_market_size"]
+        for sp in inputs.segment_percentages:
+            if sp.value is not None:
+                key = f"segment_{sp.name.lower().replace(' ', '_')}"
+                structured_inputs[key] = {
+                    "value": sp.value,
+                    "unit": "%",
+                    "currency": None,
+                    "data_type": sp.data_type or (DataType.ESTIMATED.value if sp.is_assumption else DataType.SOURCED.value),
+                    "source": sp.source_name or ("User Input" if sp.is_user_provided else "Market Research Report"),
+                    "source_url": sp.source_url,
+                    "published_year": sp.published_year or sp.year,
+                    "confidence": str(sp.confidence or "medium").lower(),
+                    "notes": sp.assumption_justification or None,
+                }
+                formula_parts.append(f"({sp.name} / 100)")
+        formula_str = " × ".join(formula_parts)
+
         interval = UncertaintyInterval(lower=current_low, point=current_val, upper=current_high)
         confidence = self._evaluate_confidence([macro] + inputs.segment_percentages)
         eq_rating, eq_reasons = self._evaluate_result_evidence_quality(
@@ -262,6 +296,10 @@ class CalculationService:
         return TAMResult(
             status=CalculationStatus.CALCULATED,
             estimate=current_val,
+            display_value=format_market_display_value(current_val, macro.currency),
+            method="top_down",
+            formula=formula_str,
+            inputs=structured_inputs,
             interval=interval,
             unit=macro.unit,
             currency=macro.currency,
@@ -463,6 +501,7 @@ class CalculationService:
             bool(warnings),
             CalculationStatus.CALCULATED,
         )
+        sam_pct = round((current_val / tam_result.estimate) * 100, 2) if (tam_result.estimate and tam_result.estimate > 0) else None
 
         return SAMResult(
             status=CalculationStatus.CALCULATED,
@@ -475,6 +514,7 @@ class CalculationService:
             confidence=confidence,
             evidence_quality=eq_rating,
             evidence_quality_reasons=eq_reasons,
+            sam_percentage_of_tam=sam_pct,
             market_scope="Serviceable market",
             market_scope_explanation="Serviceable Addressable Market (SAM): Specific portion of TAM reachable based on customer persona, geography, and distribution channels.",
             steps=steps,
@@ -574,6 +614,13 @@ class CalculationService:
             bool(warnings),
             CalculationStatus.CALCULATED,
         )
+        som_pct = round((som_val / sam_result.estimate) * 100, 2) if (sam_result.estimate and sam_result.estimate > 0) else None
+        has_explicit_range = share_input.range_min is not None and share_input.range_max is not None and share_input.range_min < share_input.range_max
+        som_scenarios = {
+            "conservative": round(som_low if has_explicit_range else som_val * 0.5, 2),
+            "base": round(som_val, 2),
+            "optimistic": round(som_high if has_explicit_range else som_val * 1.5, 2),
+        }
 
         return SOMResult(
             status=CalculationStatus.CALCULATED,
@@ -586,6 +633,8 @@ class CalculationService:
             confidence=confidence,
             evidence_quality=eq_rating,
             evidence_quality_reasons=eq_reasons,
+            som_percentage_of_sam=som_pct,
+            som_scenarios=som_scenarios,
             market_scope="Obtainable market",
             market_scope_explanation="Serviceable Obtainable Market (SOM): Realistic near-term obtainable market share given operational capacity and competitive dynamics.",
             steps=steps,
@@ -599,8 +648,95 @@ class CalculationService:
     # -----------------------------------------------------------------------
 
     def calculate_bottom_up_tam(self, inputs: BottomUpCalculationInputs) -> TAMResult:
-        """Calculate Bottom-Up TAM = Potential Customers × Annual Revenue Per Customer."""
-        if not inputs or not inputs.potential_customers:
+        """Calculate Bottom-Up TAM adapting deterministically to the SaaS pricing model."""
+        if not inputs:
+            return TAMResult(
+                status=CalculationStatus.INSUFFICIENT_EVIDENCE,
+                message="Insufficient evidence: Missing calculation inputs for bottom-up TAM.",
+                evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                evidence_quality_reasons=["Missing calculation inputs."],
+            )
+
+        steps: List[CalculationStep] = []
+        assumptions: List[CalculationAssumption] = []
+        warnings: List[str] = []
+
+        # 1. Resolve Potential Customer Population (direct or derived)
+        customers = inputs.potential_customers
+
+        # Check for derived customer population from base organizations × segment percentage
+        if (not customers or customers.value is None) and (inputs.base_organizations and inputs.segment_percentage):
+            base_org = inputs.base_organizations
+            seg_pct = inputs.segment_percentage
+
+            if base_org.value is None or seg_pct.value is None:
+                return TAMResult(
+                    status=CalculationStatus.INSUFFICIENT_EVIDENCE,
+                    message="Insufficient evidence: Base organizations or segment percentage missing numerical value.",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=["Base organizations or segment percentage missing numerical value."],
+                )
+
+            if base_org.value <= 0:
+                return TAMResult(
+                    status=CalculationStatus.INVALID_INPUT,
+                    message=f"Invalid customer count: base_organizations must be strictly greater than 0 (got {base_org.value}).",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=["Base organization count must be strictly positive."],
+                )
+
+            if seg_pct.value <= 0 or seg_pct.value > 100:
+                return TAMResult(
+                    status=CalculationStatus.INVALID_INPUT,
+                    message=f"Invalid percentage: segment_percentage must be between 0 and 100 (got {seg_pct.value}).",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=["Segment percentage must be between 0% and 100%."],
+                )
+
+            if base_org.is_conflict or seg_pct.is_conflict:
+                return TAMResult(
+                    status=CalculationStatus.CONFLICT,
+                    message="Bottom-up TAM halted due to conflicting base organization or segment percentage evidence.",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=["Conflicting evidence in customer derivation inputs."],
+                )
+
+            derived_count = base_org.value * (seg_pct.value / 100.0)
+            derived_low = (base_org.range_min * (seg_pct.range_min / 100.0)) if (base_org.range_min is not None and seg_pct.range_min is not None) else derived_count
+            derived_high = (base_org.range_max * (seg_pct.range_max / 100.0)) if (base_org.range_max is not None and seg_pct.range_max is not None) else derived_count
+
+            customers = EvidenceInput(
+                name=f"Target {base_org.unit or 'Organizations'}",
+                value=derived_count,
+                unit=base_org.unit or "organizations",
+                range_min=derived_low,
+                range_max=derived_high,
+                year=base_org.year or seg_pct.year,
+                geography=base_org.geography or seg_pct.geography,
+                data_type=DataType.DERIVED.value,
+                source_name=f"Derived from {base_org.source_name or 'base count'} & {seg_pct.source_name or 'segment %'}",
+                source_url=base_org.source_url or seg_pct.source_url,
+                published_year=base_org.published_year or seg_pct.published_year,
+                confidence=seg_pct.confidence or base_org.confidence or "medium",
+                is_assumption=base_org.is_assumption or seg_pct.is_assumption,
+                assumption_justification=f"Derived: {base_org.value:,.0f} {base_org.unit} × {seg_pct.value}% target segment.",
+            )
+
+            steps.append(
+                CalculationStep(
+                    step_number=1,
+                    description=f"Derive potential customers: {base_org.value:,.0f} {base_org.unit} × {seg_pct.value}% target segment",
+                    formula=f"{base_org.name} × ({seg_pct.name} / 100)",
+                    operands={"base_organizations": base_org.value, "segment_percentage": seg_pct.value},
+                    result=derived_count,
+                    result_interval=UncertaintyInterval(lower=derived_low, point=derived_count, upper=derived_high),
+                    unit=customers.unit,
+                    evidence_references=[r for r in [base_org.source_url, seg_pct.source_url] if r],
+                    assumptions=[a for a in [base_org.name if base_org.is_assumption else None, seg_pct.name if seg_pct.is_assumption else None] if a],
+                )
+            )
+
+        if not customers:
             return TAMResult(
                 status=CalculationStatus.INSUFFICIENT_EVIDENCE,
                 message="Insufficient evidence: Missing required potential_customers population for bottom-up TAM.",
@@ -616,7 +752,6 @@ class CalculationService:
                 evidence_quality_reasons=["Missing required pricing/ARPU evidence."],
             )
 
-        customers = inputs.potential_customers
         pricing = inputs.pricing
 
         if customers.value is None:
@@ -635,6 +770,23 @@ class CalculationService:
                 evidence_quality_reasons=["pricing contains no numerical value."],
             )
 
+        # Numerical bounds validation
+        if customers.value <= 0:
+            return TAMResult(
+                status=CalculationStatus.INVALID_INPUT,
+                message=f"Invalid customer count: potential_customers must be strictly greater than 0 (got {customers.value}).",
+                evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                evidence_quality_reasons=["Customer population count must be strictly positive."],
+            )
+
+        if pricing.value <= 0:
+            return TAMResult(
+                status=CalculationStatus.INVALID_INPUT,
+                message=f"Invalid price: pricing must be strictly greater than 0 (got {pricing.value}).",
+                evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                evidence_quality_reasons=["Pricing must be strictly positive."],
+            )
+
         if customers.is_conflict:
             return TAMResult(
                 status=CalculationStatus.CONFLICT,
@@ -650,10 +802,6 @@ class CalculationService:
                 evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                 evidence_quality_reasons=["Conflicting pricing evidence."],
             )
-
-        steps: List[CalculationStep] = []
-        assumptions: List[CalculationAssumption] = []
-        warnings: List[str] = []
 
         # Check year alignment
         if customers.year and pricing.year and customers.year != pricing.year:
@@ -677,37 +825,6 @@ class CalculationService:
                 "used as the latest authoritative available baseline."
             )
 
-        # Handle Monthly vs Annual Pricing Conversion
-        annual_price = pricing.value
-        annual_price_low = pricing.range_min if pricing.range_min is not None else annual_price
-        annual_price_high = pricing.range_max if pricing.range_max is not None else annual_price
-
-        if inputs.pricing_frequency == PriceFrequency.MONTHLY:
-            annual_price = pricing.value * 12.0
-            annual_price_low = annual_price_low * 12.0
-            annual_price_high = annual_price_high * 12.0
-            steps.append(
-                CalculationStep(
-                    step_number=1,
-                    description=f"Convert monthly price to annual revenue per user: {pricing.value} × 12",
-                    formula="Monthly Price × 12",
-                    operands={"monthly_price": pricing.value, "months": 12},
-                    result=annual_price,
-                    result_interval=UncertaintyInterval(lower=annual_price_low, point=annual_price, upper=annual_price_high),
-                    unit=f"{pricing.currency or pricing.unit}/user/year",
-                    evidence_references=[pricing.source_url or pricing.evidence_id or "Pricing"],
-                    assumptions=[pricing.name] if pricing.is_assumption else [],
-                )
-            )
-
-        cust_val = customers.value
-        cust_low = customers.range_min if customers.range_min is not None else cust_val
-        cust_high = customers.range_max if customers.range_max is not None else cust_val
-
-        tam_val = cust_val * annual_price
-        tam_low = cust_low * annual_price_low
-        tam_high = cust_high * annual_price_high
-
         if customers.is_assumption:
             assumptions.append(
                 CalculationAssumption(
@@ -727,13 +844,183 @@ class CalculationService:
                 )
             )
 
-        output_unit = f"{pricing.currency or 'USD'}/year"
+        # 2. Determine Pricing Multipliers and Formula Adaptation
+        basis = (inputs.pricing_basis or "per_facility").lower().strip()
+        is_monthly = inputs.pricing_frequency == PriceFrequency.MONTHLY or "monthly" in basis
+        is_quarterly = inputs.pricing_frequency == PriceFrequency.QUARTERLY or "quarterly" in basis
+
+        base_unit_price = pricing.value
+        base_unit_low = pricing.range_min if pricing.range_min is not None else base_unit_price
+        base_unit_high = pricing.range_max if pricing.range_max is not None else base_unit_price
+
+        # Annualize if monthly or quarterly
+        freq_multiplier = 12.0 if is_monthly else (4.0 if is_quarterly else 1.0)
+        annual_unit_price = base_unit_price * freq_multiplier
+        annual_unit_low = base_unit_low * freq_multiplier
+        annual_unit_high = base_unit_high * freq_multiplier
+
+        curr = pricing.currency or "INR"
+        curr_sym = "₹" if curr in ("INR", "₹") else "$" if curr in ("USD", "$") else f"{curr} "
+
+        if is_monthly:
+            steps.append(
+                CalculationStep(
+                    step_number=len(steps) + 1,
+                    description=f"Convert monthly price to annual revenue: {curr_sym}{pricing.value:,.2f}/month × 12 months",
+                    formula="Monthly Price × 12",
+                    operands={"monthly_price": pricing.value, "months": 12},
+                    result=annual_unit_price,
+                    result_interval=UncertaintyInterval(lower=annual_unit_low, point=annual_unit_price, upper=annual_unit_high),
+                    unit=f"{curr}/customer/year",
+                    evidence_references=[pricing.source_url or pricing.evidence_id or "Pricing"],
+                    assumptions=[pricing.name] if pricing.is_assumption else [],
+                )
+            )
+        elif is_quarterly:
+            steps.append(
+                CalculationStep(
+                    step_number=len(steps) + 1,
+                    description=f"Convert quarterly price to annual revenue: {curr_sym}{pricing.value:,.2f}/quarter × 4 quarters",
+                    formula="Quarterly Price × 4",
+                    operands={"quarterly_price": pricing.value, "quarters": 4},
+                    result=annual_unit_price,
+                    result_interval=UncertaintyInterval(lower=annual_unit_low, point=annual_unit_price, upper=annual_unit_high),
+                    unit=f"{curr}/customer/year",
+                    evidence_references=[pricing.source_url or pricing.evidence_id or "Pricing"],
+                    assumptions=[pricing.name] if pricing.is_assumption else [],
+                )
+            )
+
+        cust_val = customers.value
+        cust_low = customers.range_min if customers.range_min is not None else cust_val
+        cust_high = customers.range_max if customers.range_max is not None else cust_val
+
+        # Evaluate based on pricing basis
+        formula_str: str
+        annual_revenue_per_customer: float
+        annual_rev_low: float
+        annual_rev_high: float
+
+        if basis in ("per_provider", "per_doctor", "per_clinician", "provider", "clinician"):
+            if inputs.providers_per_organization and inputs.providers_per_organization.value is not None and inputs.providers_per_organization.value > 0:
+                ppo = inputs.providers_per_organization.value
+                ppo_low = inputs.providers_per_organization.range_min or ppo
+                ppo_high = inputs.providers_per_organization.range_max or ppo
+
+                annual_revenue_per_customer = ppo * annual_unit_price
+                annual_rev_low = ppo_low * annual_unit_low
+                annual_rev_high = ppo_high * annual_unit_high
+
+                formula_str = "number_of_organizations × providers_per_organization × annual_price_per_provider"
+                steps.append(
+                    CalculationStep(
+                        step_number=len(steps) + 1,
+                        description=f"Calculate annual revenue per organization: {ppo} providers × {curr_sym}{annual_unit_price:,.2f}/provider/year",
+                        formula="providers_per_organization × annual_price_per_provider",
+                        operands={"providers_per_organization": ppo, "annual_price_per_provider": annual_unit_price},
+                        result=annual_revenue_per_customer,
+                        result_interval=UncertaintyInterval(lower=annual_rev_low, point=annual_revenue_per_customer, upper=annual_rev_high),
+                        unit=f"{curr}/organization/year",
+                        evidence_references=[inputs.providers_per_organization.source_url or "Provider Benchmark"],
+                        assumptions=[inputs.providers_per_organization.name] if inputs.providers_per_organization.is_assumption else [],
+                    )
+                )
+            else:
+                annual_revenue_per_customer = annual_unit_price
+                annual_rev_low = annual_unit_low
+                annual_rev_high = annual_unit_high
+                formula_str = "number_of_providers × annual_price_per_provider"
+
+        elif basis in ("per_seat", "per_user", "seat", "user"):
+            if inputs.users_per_organization and inputs.users_per_organization.value is not None and inputs.users_per_organization.value > 0:
+                upo = inputs.users_per_organization.value
+                upo_low = inputs.users_per_organization.range_min or upo
+                upo_high = inputs.users_per_organization.range_max or upo
+
+                annual_revenue_per_customer = upo * annual_unit_price
+                annual_rev_low = upo_low * annual_unit_low
+                annual_rev_high = upo_high * annual_unit_high
+
+                formula_str = "number_of_organizations × seats_per_organization × annual_price_per_seat"
+                steps.append(
+                    CalculationStep(
+                        step_number=len(steps) + 1,
+                        description=f"Calculate annual revenue per organization: {upo} seats × {curr_sym}{annual_unit_price:,.2f}/seat/year",
+                        formula="seats_per_organization × annual_price_per_seat",
+                        operands={"seats_per_organization": upo, "annual_price_per_seat": annual_unit_price},
+                        result=annual_revenue_per_customer,
+                        result_interval=UncertaintyInterval(lower=annual_rev_low, point=annual_revenue_per_customer, upper=annual_rev_high),
+                        unit=f"{curr}/organization/year",
+                        evidence_references=[inputs.users_per_organization.source_url or "Seat Benchmark"],
+                        assumptions=[inputs.users_per_organization.name] if inputs.users_per_organization.is_assumption else [],
+                    )
+                )
+            else:
+                annual_revenue_per_customer = annual_unit_price
+                annual_rev_low = annual_unit_low
+                annual_rev_high = annual_unit_high
+                formula_str = "number_of_seats × annual_price_per_seat"
+
+        elif basis in ("per_patient", "per_transaction", "usage_based", "patient", "transaction"):
+            if inputs.annual_volume_per_customer and inputs.annual_volume_per_customer.value is not None and inputs.annual_volume_per_customer.value > 0:
+                vol = inputs.annual_volume_per_customer.value
+                vol_low = inputs.annual_volume_per_customer.range_min or vol
+                vol_high = inputs.annual_volume_per_customer.range_max or vol
+
+                annual_revenue_per_customer = vol * annual_unit_price
+                annual_rev_low = vol_low * annual_unit_low
+                annual_rev_high = vol_high * annual_unit_high
+
+                formula_str = "number_of_organizations × annual_volume_per_organization × fee_per_unit"
+                steps.append(
+                    CalculationStep(
+                        step_number=len(steps) + 1,
+                        description=f"Calculate annual revenue per organization: {vol:,.0f} volume units × {curr_sym}{annual_unit_price:,.2f}/unit",
+                        formula="volume_per_organization × fee_per_unit",
+                        operands={"annual_volume": vol, "fee_per_unit": annual_unit_price},
+                        result=annual_revenue_per_customer,
+                        result_interval=UncertaintyInterval(lower=annual_rev_low, point=annual_revenue_per_customer, upper=annual_rev_high),
+                        unit=f"{curr}/organization/year",
+                        evidence_references=[inputs.annual_volume_per_customer.source_url or "Volume Benchmark"],
+                        assumptions=[inputs.annual_volume_per_customer.name] if inputs.annual_volume_per_customer.is_assumption else [],
+                    )
+                )
+            else:
+                annual_revenue_per_customer = annual_unit_price
+                annual_rev_low = annual_unit_low
+                annual_rev_high = annual_unit_high
+                formula_str = "potential_volume × fee_per_unit"
+
+        elif is_monthly:
+            annual_revenue_per_customer = annual_unit_price
+            annual_rev_low = annual_unit_low
+            annual_rev_high = annual_unit_high
+            formula_str = "potential_customers × (monthly_price × 12)"
+
+        elif is_quarterly:
+            annual_revenue_per_customer = annual_unit_price
+            annual_rev_low = annual_unit_low
+            annual_rev_high = annual_unit_high
+            formula_str = "potential_customers × (quarterly_price × 4)"
+
+        else:
+            annual_revenue_per_customer = annual_unit_price
+            annual_rev_low = annual_unit_low
+            annual_rev_high = annual_unit_high
+            formula_str = "potential_customers × annual_revenue_per_customer"
+
+        # Final TAM Calculation
+        tam_val = cust_val * annual_revenue_per_customer
+        tam_low = cust_low * annual_rev_low
+        tam_high = cust_high * annual_rev_high
+
+        output_unit = f"{curr}/year"
         steps.append(
             CalculationStep(
                 step_number=len(steps) + 1,
-                description="Bottom-up TAM = Potential Customers × Annual Price",
-                formula="Potential Customers × Annual ARPU",
-                operands={"potential_customers": cust_val, "annual_arpu": annual_price},
+                description=f"Calculate Total Addressable Market (TAM): {cust_val:,.0f} {customers.unit} × {curr_sym}{annual_revenue_per_customer:,.2f}/year",
+                formula=formula_str,
+                operands={"potential_customers": cust_val, "annual_revenue_per_customer": annual_revenue_per_customer},
                 result=tam_val,
                 result_interval=UncertaintyInterval(lower=tam_low, point=tam_val, upper=tam_high),
                 unit=output_unit,
@@ -746,10 +1033,62 @@ class CalculationService:
             )
         )
 
+        # 3. Build Structured Provenance Inputs Dictionary
+        def _build_input_meta(inp: Optional[EvidenceInput], role_title: str) -> Optional[Dict[str, Any]]:
+            if not inp:
+                return None
+            dt = inp.data_type or (DataType.ESTIMATED.value if inp.is_assumption else DataType.SOURCED.value)
+            conf = inp.confidence or (
+                "high" if (dt == DataType.SOURCED.value and inp.source_quality_tier in (SourceQualityTier.TIER_1_GOVERNMENT_OFFICIAL.value, SourceQualityTier.TIER_2_ACADEMIC_TRADE.value))
+                else "medium" if dt == DataType.DERIVED.value
+                else "low"
+            )
+            return {
+                "metric": inp.name or role_title,
+                "value": inp.value,
+                "unit": inp.unit,
+                "currency": inp.currency,
+                "data_type": dt,
+                "source": inp.source_name or inp.source_title or ("User Input" if inp.is_user_provided else "Healthcare Industry Benchmark"),
+                "source_url": inp.source_url,
+                "published_year": inp.published_year or inp.year,
+                "confidence": str(conf).lower(),
+                "notes": inp.assumption_justification or None,
+            }
+
+        tam_inputs: Dict[str, Any] = {
+            "potential_customers": _build_input_meta(customers, "Potential Customers"),
+            "annual_revenue_per_customer": {
+                "metric": "Annual Revenue Per Customer",
+                "value": annual_revenue_per_customer,
+                "unit": f"{curr}/customer/year",
+                "currency": curr,
+                "data_type": DataType.DERIVED.value if (is_monthly or is_quarterly or inputs.providers_per_organization or inputs.users_per_organization) else (pricing.data_type or DataType.SOURCED.value),
+                "source": pricing.source_name or ("User Input" if pricing.is_user_provided else "Healthcare SaaS Pricing Benchmark"),
+                "source_url": pricing.source_url,
+                "published_year": pricing.published_year or pricing.year,
+                "confidence": str(pricing.confidence or "medium").lower(),
+                "notes": pricing.assumption_justification or (f"Derived from {pricing.value}/month × 12" if is_monthly else (f"Derived from {pricing.value}/quarter × 4" if is_quarterly else None)),
+            },
+        }
+
+        if inputs.base_organizations:
+            tam_inputs["base_organizations"] = _build_input_meta(inputs.base_organizations, "Base Organizations")
+        if inputs.segment_percentage:
+            tam_inputs["segment_percentage"] = _build_input_meta(inputs.segment_percentage, "Segment Percentage")
+        if inputs.providers_per_organization:
+            tam_inputs["providers_per_organization"] = _build_input_meta(inputs.providers_per_organization, "Providers Per Organization")
+        if inputs.users_per_organization:
+            tam_inputs["users_per_organization"] = _build_input_meta(inputs.users_per_organization, "Users Per Organization")
+        if inputs.annual_volume_per_customer:
+            tam_inputs["annual_volume_per_customer"] = _build_input_meta(inputs.annual_volume_per_customer, "Annual Volume Per Customer")
+
+        # 4. Evidence Quality & Confidence Evaluation
+        all_eval_inputs = [i for i in [customers, pricing, inputs.base_organizations, inputs.segment_percentage, inputs.providers_per_organization, inputs.users_per_organization, inputs.annual_volume_per_customer] if i is not None]
         interval = UncertaintyInterval(lower=tam_low, point=tam_val, upper=tam_high)
-        confidence = self._evaluate_confidence([customers, pricing])
+        confidence = self._evaluate_confidence(all_eval_inputs)
         eq_rating, eq_reasons = self._evaluate_result_evidence_quality(
-            [customers, pricing],
+            all_eval_inputs,
             bool(warnings),
             CalculationStatus.CALCULATED,
         )
@@ -757,20 +1096,24 @@ class CalculationService:
         return TAMResult(
             status=CalculationStatus.CALCULATED,
             estimate=tam_val,
+            display_value=format_market_display_value(tam_val, curr),
+            method="bottom_up",
+            formula=formula_str,
+            inputs=tam_inputs,
             interval=interval,
             unit=output_unit,
-            currency=pricing.currency,
+            currency=curr,
             year=customers.year or pricing.year,
             geography=customers.geography,
             confidence=confidence,
             evidence_quality=eq_rating,
             evidence_quality_reasons=eq_reasons,
             market_scope="Addressable market",
-            market_scope_explanation="Total Addressable Market (TAM): Maximum realistic total market demand calculated from potential customer population and annual pricing.",
+            market_scope_explanation="Total Addressable Market (TAM): Maximum annual revenue opportunity if 100% of relevant potential customers adopted the SaaS.",
             steps=steps,
             assumptions_used=assumptions,
             warnings=warnings,
-            message="Bottom-up TAM successfully calculated from unit economics.",
+            message="Bottom-up TAM successfully calculated from SaaS unit economics.",
         )
 
     def calculate_bottom_up_sam(
@@ -783,6 +1126,7 @@ class CalculationService:
                 message="Cannot calculate SAM: Bottom-up TAM is not successfully calculated.",
                 evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                 evidence_quality_reasons=["Cannot calculate SAM because Bottom-Up TAM is not available."],
+                calculation_method="bottom_up",
             )
 
         if not inputs.pricing or inputs.pricing.value is None:
@@ -791,6 +1135,7 @@ class CalculationService:
                 message="Insufficient evidence: Missing pricing information for bottom-up SAM.",
                 evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                 evidence_quality_reasons=["Missing pricing evidence for bottom-up SAM."],
+                calculation_method="bottom_up",
             )
 
         # Determine Serviceable Customers: either directly supplied or derived from target_customer_percentage
@@ -798,14 +1143,44 @@ class CalculationService:
         serviceable_low: Optional[float] = None
         serviceable_high: Optional[float] = None
         eval_inputs: List[EvidenceInput] = [inputs.pricing]
+        applied_constraints: List[str] = list(inputs.serviceability_constraints or [])
+        serviceability_ev_refs: List[str] = []
 
         steps: List[CalculationStep] = list(tam_result.steps)
         assumptions: List[CalculationAssumption] = list(tam_result.assumptions_used)
         warnings: List[str] = list(tam_result.warnings)
 
-        annual_price = inputs.pricing.value * (12.0 if inputs.pricing_frequency == PriceFrequency.MONTHLY else 1.0)
-        annual_price_low = (inputs.pricing.range_min or inputs.pricing.value) * (12.0 if inputs.pricing_frequency == PriceFrequency.MONTHLY else 1.0)
-        annual_price_high = (inputs.pricing.range_max or inputs.pricing.value) * (12.0 if inputs.pricing_frequency == PriceFrequency.MONTHLY else 1.0)
+        # Calculate annual ARPU consistent with TAM unit economics
+        basis = (inputs.pricing_basis or "per_facility").lower().strip()
+        is_monthly = inputs.pricing_frequency == PriceFrequency.MONTHLY or "monthly" in basis
+        is_quarterly = inputs.pricing_frequency == PriceFrequency.QUARTERLY or "quarterly" in basis
+        base_unit_price = inputs.pricing.value
+        base_unit_low = inputs.pricing.range_min if inputs.pricing.range_min is not None else base_unit_price
+        base_unit_high = inputs.pricing.range_max if inputs.pricing.range_max is not None else base_unit_price
+
+        freq_multiplier = 12.0 if is_monthly else (4.0 if is_quarterly else 1.0)
+        annual_price = base_unit_price * freq_multiplier
+        annual_price_low = base_unit_low * freq_multiplier
+        annual_price_high = base_unit_high * freq_multiplier
+
+        # Apply multiplier if per_provider, per_user, or usage_based
+        if basis in ("per_provider", "per_doctor", "per_clinician", "provider", "clinician") and inputs.providers_per_organization and inputs.providers_per_organization.value:
+            ppo = inputs.providers_per_organization.value
+            annual_price = ppo * annual_price
+            annual_price_low = (inputs.providers_per_organization.range_min or ppo) * annual_price_low
+            annual_price_high = (inputs.providers_per_organization.range_max or ppo) * annual_price_high
+        elif basis in ("per_seat", "per_user", "seat", "user") and inputs.users_per_organization and inputs.users_per_organization.value:
+            upo = inputs.users_per_organization.value
+            annual_price = upo * annual_price
+            annual_price_low = (inputs.users_per_organization.range_min or upo) * annual_price_low
+            annual_price_high = (inputs.users_per_organization.range_max or upo) * annual_price_high
+        elif basis in ("per_patient", "per_transaction", "usage_based", "patient", "transaction") and inputs.annual_volume_per_customer and inputs.annual_volume_per_customer.value:
+            vol = inputs.annual_volume_per_customer.value
+            annual_price = vol * annual_price
+            annual_price_low = (inputs.annual_volume_per_customer.range_min or vol) * annual_price_low
+            annual_price_high = (inputs.annual_volume_per_customer.range_max or vol) * annual_price_high
+
+        total_potential_count = inputs.potential_customers.value if (inputs.potential_customers and inputs.potential_customers.value is not None) else None
 
         if inputs.serviceable_customers and inputs.serviceable_customers.value is not None:
             srv = inputs.serviceable_customers
@@ -815,11 +1190,14 @@ class CalculationService:
                     message=f"Bottom-up SAM halted due to conflicting serviceable customers evidence: {srv.conflicting_values}.",
                     evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                     evidence_quality_reasons=["Conflicting serviceable customer evidence."],
+                    calculation_method="bottom_up",
                 )
             serviceable_count = srv.value
             serviceable_low = srv.range_min if srv.range_min is not None else serviceable_count
             serviceable_high = srv.range_max if srv.range_max is not None else serviceable_count
             eval_inputs.append(srv)
+            if srv.source_url or srv.evidence_id:
+                serviceability_ev_refs.append(srv.source_url or srv.evidence_id)
 
             if srv.is_assumption:
                 assumptions.append(
@@ -828,19 +1206,33 @@ class CalculationService:
                         value=srv.value,
                         unit=srv.unit,
                         justification=srv.assumption_justification or "Serviceable customer count assumption",
+                        is_user_provided=srv.is_user_provided,
                     )
+                )
+
+            # Invariant check: serviceable customers cannot exceed total potential customers
+            if total_potential_count is not None and serviceable_count > total_potential_count:
+                return SAMResult(
+                    status=CalculationStatus.NOT_CALCULABLE,
+                    message=f"Validation error: Serviceable customer count ({serviceable_count:,.0f}) cannot exceed total addressable customer population ({total_potential_count:,.0f}).",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=[
+                        f"Physical Invariant Violation: Serviceable customers ({serviceable_count:,.0f}) > Potential customers ({total_potential_count:,.0f})."
+                    ],
+                    calculation_method="bottom_up",
+                    warnings=[f"Calculation rejected: Serviceable customer count ({serviceable_count:,.0f}) exceeds total addressable population ({total_potential_count:,.0f})."],
                 )
 
             steps.append(
                 CalculationStep(
                     step_number=len(steps) + 1,
-                    description=f"Directly supplied serviceable customer count: {srv.name}",
-                    formula="Direct Serviceable Customer Input",
-                    operands={srv.name: srv.value},
+                    description=f"Determine serviceable customer population: {srv.name} ({serviceable_count:,.0f} {srv.unit})",
+                    formula="Direct Serviceable Customer Population",
+                    operands={"serviceable_customers": serviceable_count},
                     result=serviceable_count,
                     result_interval=UncertaintyInterval(lower=serviceable_low, point=serviceable_count, upper=serviceable_high),
                     unit=srv.unit,
-                    evidence_references=[srv.source_url or srv.evidence_id or "Serviceable Customers"],
+                    evidence_references=[srv.source_url or srv.evidence_id or "Serviceable Population"],
                     assumptions=[srv.name] if srv.is_assumption else [],
                 )
             )
@@ -853,6 +1245,7 @@ class CalculationService:
                     message=f"Bottom-up SAM halted due to conflicting target customer percentage evidence: {pct.conflicting_values}.",
                     evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                     evidence_quality_reasons=["Conflicting target customer percentage evidence."],
+                    calculation_method="bottom_up",
                 )
             if not inputs.potential_customers or inputs.potential_customers.value is None:
                 return SAMResult(
@@ -860,6 +1253,7 @@ class CalculationService:
                     message="Insufficient evidence: potential_customers count missing to apply target_customer_percentage.",
                     evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                     evidence_quality_reasons=["Missing potential customers count to apply target %."],
+                    calculation_method="bottom_up",
                 )
 
             p_val = inputs.potential_customers.value
@@ -874,6 +1268,8 @@ class CalculationService:
             serviceable_low = p_low * ratio_low
             serviceable_high = p_high * ratio_high
             eval_inputs.extend([inputs.potential_customers, pct])
+            if pct.source_url or pct.evidence_id:
+                serviceability_ev_refs.append(pct.source_url or pct.evidence_id)
 
             if pct.is_assumption:
                 assumptions.append(
@@ -882,19 +1278,30 @@ class CalculationService:
                         value=pct.value,
                         unit=pct.unit,
                         justification=pct.assumption_justification or "Target customer % assumption",
+                        is_user_provided=pct.is_user_provided,
                     )
+                )
+
+            # Invariant check
+            if serviceable_count > p_val:
+                return SAMResult(
+                    status=CalculationStatus.NOT_CALCULABLE,
+                    message=f"Validation error: Derived serviceable customers ({serviceable_count:,.0f}) cannot exceed total population ({p_val:,.0f}).",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=["Serviceable percentage > 100%."],
+                    calculation_method="bottom_up",
                 )
 
             steps.append(
                 CalculationStep(
                     step_number=len(steps) + 1,
-                    description=f"Derive serviceable customers: Potential Customers × {pct.name} ({pct.value}%)",
-                    formula="Potential Customers × (Target % / 100)",
-                    operands={"potential_customers": p_val, pct.name: pct.value},
+                    description=f"Apply serviceability constraint: {pct.name} ({pct.value}%) to {p_val:,.0f} potential customers",
+                    formula="Potential Customers × (Serviceability % / 100)",
+                    operands={"potential_customers": p_val, "serviceability_percentage": pct.value},
                     result=serviceable_count,
                     result_interval=UncertaintyInterval(lower=serviceable_low, point=serviceable_count, upper=serviceable_high),
                     unit=inputs.potential_customers.unit,
-                    evidence_references=[pct.source_url or pct.evidence_id or "Target Customer %"],
+                    evidence_references=[pct.source_url or pct.evidence_id or "Serviceability Constraint"],
                     assumptions=[pct.name] if pct.is_assumption else [],
                 )
             )
@@ -903,7 +1310,7 @@ class CalculationService:
                 status=CalculationStatus.INSUFFICIENT_EVIDENCE,
                 estimate=None,
                 interval=None,
-                unit=f"{inputs.pricing.currency or 'USD'}/year",
+                unit=f"{inputs.pricing.currency or 'INR'}/year",
                 currency=inputs.pricing.currency,
                 year=inputs.pricing.year,
                 geography=inputs.pricing.geography,
@@ -919,30 +1326,103 @@ class CalculationService:
                     "Insufficient evidence: Missing serviceable customer segmentation evidence "
                     "(e.g. serviceable customer count or target customer qualification percentage) to derive SAM from TAM."
                 ),
+                calculation_method="bottom_up",
             )
 
         sam_val = serviceable_count * annual_price
         sam_low = serviceable_low * annual_price_low
         sam_high = serviceable_high * annual_price_high
 
-        # Funnel Invariant: SAM <= TAM
+        # Funnel Invariant: 0 <= SAM <= TAM
         if tam_result.estimate is not None and sam_val > tam_result.estimate:
             sam_val = tam_result.estimate
             warnings.append(f"SAM was clamped to not exceed TAM ({tam_result.estimate:,.0f}).")
+        if sam_val < 0.0:
+            sam_val = 0.0
 
         steps.append(
             CalculationStep(
                 step_number=len(steps) + 1,
-                description="Bottom-up SAM = Serviceable Customers × Annual Price",
-                formula="Serviceable Customers × Annual ARPU",
-                operands={"serviceable_customers": serviceable_count, "annual_arpu": annual_price},
+                description=f"Calculate Serviceable Addressable Market (SAM): {serviceable_count:,.0f} serviceable customers × {tam_result.currency or 'INR'} {annual_price:,.2f}/year",
+                formula="serviceable_customers × annual_revenue_per_customer",
+                operands={"serviceable_customers": serviceable_count, "annual_revenue_per_customer": annual_price},
                 result=sam_val,
                 result_interval=UncertaintyInterval(lower=sam_low, point=sam_val, upper=sam_high),
-                unit=tam_result.unit or "USD/year",
+                unit=tam_result.unit or "INR/year",
                 evidence_references=[inputs.pricing.source_url or inputs.pricing.evidence_id or "Pricing"],
                 assumptions=[a.name for a in assumptions],
+                warnings=warnings,
             )
         )
+
+        steps.append(
+            CalculationStep(
+                step_number=len(steps) + 1,
+                description=f"Validate SAM Invariant: SAM ({sam_val:,.0f}) <= TAM ({tam_result.estimate:,.0f})",
+                formula="0 <= SAM <= TAM",
+                operands={"sam_value": sam_val, "tam_value": tam_result.estimate},
+                result=sam_val,
+                unit=tam_result.unit or "INR/year",
+                evidence_references=[],
+                assumptions=[],
+            )
+        )
+
+        # Build Structured Provenance Inputs Dictionary
+        def _build_input_meta(inp: Optional[EvidenceInput], role_title: str) -> Optional[Dict[str, Any]]:
+            if not inp:
+                return None
+            dt = inp.data_type or (DataType.ESTIMATED.value if inp.is_assumption else DataType.SOURCED.value)
+            conf = inp.confidence or (
+                "high" if (dt == DataType.SOURCED.value and inp.source_quality_tier in (SourceQualityTier.TIER_1_GOVERNMENT_OFFICIAL.value, SourceQualityTier.TIER_2_ACADEMIC_TRADE.value))
+                else "medium" if dt == DataType.DERIVED.value
+                else "low"
+            )
+            return {
+                "metric": inp.name or role_title,
+                "value": inp.value,
+                "unit": inp.unit,
+                "currency": inp.currency,
+                "data_type": dt,
+                "source": inp.source_name or inp.source_title or ("User Input" if inp.is_user_provided else "Healthcare Industry Benchmark"),
+                "source_url": inp.source_url,
+                "published_year": inp.published_year or inp.year,
+                "confidence": str(conf).lower(),
+                "notes": inp.assumption_justification or None,
+            }
+
+        srv_inp_meta = _build_input_meta(inputs.serviceable_customers, "Serviceable Customers")
+        if not srv_inp_meta and inputs.target_customer_percentage:
+            pct_meta = _build_input_meta(inputs.target_customer_percentage, "Serviceability Percentage")
+            srv_inp_meta = {
+                "metric": "Serviceable Customers",
+                "value": serviceable_count,
+                "unit": inputs.potential_customers.unit if inputs.potential_customers else "facilities",
+                "data_type": DataType.DERIVED.value,
+                "source": pct_meta.get("source") if pct_meta else "Derived",
+                "source_url": pct_meta.get("source_url") if pct_meta else None,
+                "published_year": pct_meta.get("published_year") if pct_meta else None,
+                "confidence": pct_meta.get("confidence", "medium") if pct_meta else "medium",
+                "notes": f"Derived via {inputs.target_customer_percentage.value}% serviceability constraint",
+            }
+
+        sam_inputs: Dict[str, Any] = {
+            "serviceable_customers": srv_inp_meta,
+            "annual_revenue_per_customer": {
+                "metric": "Annual Revenue Per Customer",
+                "value": annual_price,
+                "unit": f"{tam_result.currency or 'INR'}/customer/year",
+                "currency": tam_result.currency,
+                "data_type": DataType.DERIVED.value if (is_monthly or is_quarterly or inputs.providers_per_organization or inputs.users_per_organization or inputs.annual_volume_per_customer) else (inputs.pricing.data_type or DataType.SOURCED.value),
+                "source": inputs.pricing.source_name or ("User Input" if inputs.pricing.is_user_provided else "Healthcare SaaS Pricing Benchmark"),
+                "source_url": inputs.pricing.source_url,
+                "published_year": inputs.pricing.published_year or inputs.pricing.year,
+                "confidence": str(inputs.pricing.confidence or "medium").lower(),
+                "notes": inputs.pricing.assumption_justification or (f"Derived from {inputs.pricing.value}/month × 12" if is_monthly else (f"Derived from {inputs.pricing.value}/quarter × 4" if is_quarterly else None)),
+            },
+        }
+        if inputs.target_customer_percentage:
+            sam_inputs["serviceability_percentage"] = _build_input_meta(inputs.target_customer_percentage, "Serviceability Percentage")
 
         interval = UncertaintyInterval(lower=sam_low, point=sam_val, upper=sam_high)
         confidence = self._evaluate_confidence(eval_inputs, base_confidence=tam_result.confidence)
@@ -951,10 +1431,16 @@ class CalculationService:
             bool(warnings),
             CalculationStatus.CALCULATED,
         )
+        sam_pct = round((sam_val / tam_result.estimate) * 100, 2) if (tam_result.estimate and tam_result.estimate > 0) else None
+        srv_factor = round((serviceable_count / total_potential_count) * 100, 2) if (total_potential_count and total_potential_count > 0) else None
 
         return SAMResult(
             status=CalculationStatus.CALCULATED,
             estimate=sam_val,
+            display_value=format_market_display_value(sam_val, tam_result.currency),
+            method="bottom_up",
+            formula="serviceable_customers × annual_revenue_per_customer",
+            inputs=sam_inputs,
             interval=interval,
             unit=tam_result.unit,
             currency=tam_result.currency,
@@ -963,8 +1449,14 @@ class CalculationService:
             confidence=confidence,
             evidence_quality=eq_rating,
             evidence_quality_reasons=eq_reasons,
+            sam_percentage_of_tam=sam_pct,
+            serviceable_customer_count=serviceable_count,
+            serviceability_constraints=applied_constraints,
+            serviceability_evidence=serviceability_ev_refs,
+            serviceability_factor=srv_factor,
+            calculation_method="bottom_up",
             market_scope="Serviceable market",
-            market_scope_explanation="Serviceable Addressable Market (SAM): Specific portion of TAM reachable by filtering for the serviceable target customer segment.",
+            market_scope_explanation="Serviceable Addressable Market (SAM): Specific portion of TAM reachable by filtering for the serviceable target customer segment and constraints.",
             steps=steps,
             assumptions_used=assumptions,
             warnings=warnings,
@@ -981,6 +1473,7 @@ class CalculationService:
                 message="Cannot calculate SOM: Bottom-up SAM is not successfully calculated.",
                 evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                 evidence_quality_reasons=["Cannot calculate SOM because Bottom-Up SAM is not available."],
+                calculation_method="bottom_up",
             )
 
         if not inputs.pricing or inputs.pricing.value is None:
@@ -989,6 +1482,7 @@ class CalculationService:
                 message="Insufficient evidence: Missing pricing information for bottom-up SOM.",
                 evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                 evidence_quality_reasons=["Missing pricing evidence for bottom-up SOM."],
+                calculation_method="bottom_up",
             )
 
         # SOM SAFETY RULE: Must not invent obtainable customers or market share
@@ -998,28 +1492,74 @@ class CalculationService:
         if not has_obtainable_cust and not has_obtainable_share:
             return SOMResult(
                 status=CalculationStatus.INSUFFICIENT_EVIDENCE,
-                message=(
-                    "Insufficient evidence: SOM safety rule strictly forbids arbitrary market share percentages. "
-                    "Neither realistically_obtainable_customers nor obtainable_market_share was provided."
-                ),
+                estimate=None,
+                interval=None,
+                unit=sam_result.unit,
+                currency=sam_result.currency,
+                year=sam_result.year,
+                geography=sam_result.geography,
+                confidence=EvidenceConfidence.LOW,
                 evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                 evidence_quality_reasons=[
                     "SOM Safety Rule: Withheld because obtainable customer evidence or market share was not provided."
                 ],
+                market_scope="Obtainable market",
+                market_scope_explanation="Serviceable Obtainable Market (SOM): Realistic near-term obtainable market share given operational capacity and competitive dynamics.",
+                steps=list(sam_result.steps),
+                assumptions_used=list(sam_result.assumptions_used),
+                warnings=list(sam_result.warnings) + ["SOM could not be calculated: Missing obtainable customer acquisition capacity or market share percentage."],
+                message=(
+                    "Insufficient evidence: SOM safety rule strictly forbids arbitrary market share percentages. "
+                    "Neither realistically_obtainable_customers nor obtainable_market_share was provided."
+                ),
+                calculation_method="bottom_up",
             )
 
         steps: List[CalculationStep] = list(sam_result.steps)
         assumptions: List[CalculationAssumption] = list(sam_result.assumptions_used)
         warnings: List[str] = list(sam_result.warnings)
+        capacity_assumptions: List[str] = []
 
-        annual_price = inputs.pricing.value * (12.0 if inputs.pricing_frequency == PriceFrequency.MONTHLY else 1.0)
-        annual_price_low = (inputs.pricing.range_min or inputs.pricing.value) * (12.0 if inputs.pricing_frequency == PriceFrequency.MONTHLY else 1.0)
-        annual_price_high = (inputs.pricing.range_max or inputs.pricing.value) * (12.0 if inputs.pricing_frequency == PriceFrequency.MONTHLY else 1.0)
+        # Pricing normalization consistent with TAM and SAM
+        basis = (inputs.pricing_basis or "per_facility").lower().strip()
+        is_monthly = inputs.pricing_frequency == PriceFrequency.MONTHLY or "monthly" in basis
+        is_quarterly = inputs.pricing_frequency == PriceFrequency.QUARTERLY or "quarterly" in basis
+        base_unit_price = inputs.pricing.value
+        base_unit_low = inputs.pricing.range_min if inputs.pricing.range_min is not None else base_unit_price
+        base_unit_high = inputs.pricing.range_max if inputs.pricing.range_max is not None else base_unit_price
+
+        freq_multiplier = 12.0 if is_monthly else (4.0 if is_quarterly else 1.0)
+        annual_price = base_unit_price * freq_multiplier
+        annual_price_low = base_unit_low * freq_multiplier
+        annual_price_high = base_unit_high * freq_multiplier
+
+        if basis in ("per_provider", "per_doctor", "per_clinician", "provider", "clinician") and inputs.providers_per_organization and inputs.providers_per_organization.value:
+            ppo = inputs.providers_per_organization.value
+            annual_price = ppo * annual_price
+            annual_price_low = (inputs.providers_per_organization.range_min or ppo) * annual_price_low
+            annual_price_high = (inputs.providers_per_organization.range_max or ppo) * annual_price_high
+        elif basis in ("per_seat", "per_user", "seat", "user") and inputs.users_per_organization and inputs.users_per_organization.value:
+            upo = inputs.users_per_organization.value
+            annual_price = upo * annual_price
+            annual_price_low = (inputs.users_per_organization.range_min or upo) * annual_price_low
+            annual_price_high = (inputs.users_per_organization.range_max or upo) * annual_price_high
+        elif basis in ("per_patient", "per_transaction", "usage_based", "patient", "transaction") and inputs.annual_volume_per_customer and inputs.annual_volume_per_customer.value:
+            vol = inputs.annual_volume_per_customer.value
+            annual_price = vol * annual_price
+            annual_price_low = (inputs.annual_volume_per_customer.range_min or vol) * annual_price_low
+            annual_price_high = (inputs.annual_volume_per_customer.range_max or vol) * annual_price_high
+
+        serviceable_count: Optional[float] = getattr(sam_result, "serviceable_customer_count", None)
+        if serviceable_count is None and sam_result.estimate is not None and annual_price > 0:
+            serviceable_count = sam_result.estimate / annual_price
 
         som_val: float
         som_low: float
         som_high: float
+        obtainable_count: Optional[float] = None
         eval_inputs: List[EvidenceInput] = [inputs.pricing]
+        curr = sam_result.currency or inputs.pricing.currency or "INR"
+        curr_sym = "₹" if curr in ("INR", "₹") else "$" if curr in ("USD", "$") else f"{curr} "
 
         if has_obtainable_cust:
             obt = inputs.realistically_obtainable_customers
@@ -1029,10 +1569,34 @@ class CalculationService:
                     message=f"Bottom-up SOM halted due to conflicting obtainable customer evidence: {obt.conflicting_values}.",
                     evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                     evidence_quality_reasons=["Conflicting obtainable customer evidence."],
+                    calculation_method="bottom_up",
                 )
             obt_val = obt.value
+            if obt_val < 0:
+                return SOMResult(
+                    status=CalculationStatus.INVALID_INPUT,
+                    message=f"Invalid customer count: realistically_obtainable_customers must be non-negative (got {obt_val}).",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=["Obtainable customer count must be non-negative."],
+                    calculation_method="bottom_up",
+                )
+
+            # Invariant check: obtainable customers cannot exceed serviceable customers
+            if serviceable_count is not None and obt_val > serviceable_count:
+                return SOMResult(
+                    status=CalculationStatus.NOT_CALCULABLE,
+                    message=f"Validation error: Obtainable customer count ({obt_val:,.0f}) cannot exceed serviceable customer population ({serviceable_count:,.0f}).",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=[
+                        f"Physical Invariant Violation: Obtainable customers ({obt_val:,.0f}) > Serviceable customers ({serviceable_count:,.0f})."
+                    ],
+                    calculation_method="bottom_up",
+                    warnings=[f"Calculation rejected: Obtainable customer count ({obt_val:,.0f}) exceeds serviceable population ({serviceable_count:,.0f})."],
+                )
+
             obt_low = obt.range_min if obt.range_min is not None else obt_val
             obt_high = obt.range_max if obt.range_max is not None else obt_val
+            obtainable_count = obt_val
             eval_inputs.append(obt)
 
             som_val = obt_val * annual_price
@@ -1045,23 +1609,42 @@ class CalculationService:
                         name=obt.name,
                         value=obt.value,
                         unit=obt.unit,
-                        justification=obt.assumption_justification or "Target obtainable customer assumption",
+                        justification=obt.assumption_justification or "Target obtainable customer acquisition assumption",
+                        is_user_provided=obt.is_user_provided,
                     )
                 )
+                if obt.assumption_justification:
+                    capacity_assumptions.append(obt.assumption_justification)
 
             steps.append(
                 CalculationStep(
                     step_number=len(steps) + 1,
-                    description=f"Apply realistically obtainable customers: {obt.name} ({obt.value:,.0f} {obt.unit})",
-                    formula="Obtainable Customers × Annual ARPU",
-                    operands={"obtainable_customers": obt_val, "annual_arpu": annual_price},
-                    result=som_val,
-                    result_interval=UncertaintyInterval(lower=som_low, point=som_val, upper=som_high),
-                    unit=sam_result.unit or "USD/year",
-                    evidence_references=[obt.source_url or obt.evidence_id or "Obtainable Customers"],
+                    description=f"Determine realistically obtainable customers: {obt.name} ({obt_val:,.0f} {obt.unit})",
+                    formula="Direct Obtainable Customer Population",
+                    operands={"obtainable_customers": obt_val},
+                    result=obt_val,
+                    result_interval=UncertaintyInterval(lower=obt_low, point=obt_val, upper=obt_high),
+                    unit=obt.unit,
+                    evidence_references=[obt.source_url or obt.evidence_id or "Obtainable Capacity"],
                     assumptions=[obt.name] if obt.is_assumption else [],
                 )
             )
+
+            steps.append(
+                CalculationStep(
+                    step_number=len(steps) + 1,
+                    description=f"Calculate Serviceable Obtainable Market (SOM): {obt_val:,.0f} customers × {curr_sym}{annual_price:,.2f}/year",
+                    formula="obtainable_customers × annual_revenue_per_customer",
+                    operands={"obtainable_customers": obt_val, "annual_revenue_per_customer": annual_price},
+                    result=som_val,
+                    result_interval=UncertaintyInterval(lower=som_low, point=som_val, upper=som_high),
+                    unit=sam_result.unit or f"{curr}/year",
+                    evidence_references=[inputs.pricing.source_url or inputs.pricing.evidence_id or "Pricing"],
+                    assumptions=[a.name for a in assumptions],
+                    warnings=warnings,
+                )
+            )
+
         else:
             obt_share = inputs.obtainable_market_share
             if obt_share.is_conflict:
@@ -1070,7 +1653,17 @@ class CalculationService:
                     message=f"Bottom-up SOM halted due to conflicting obtainable market share evidence: {obt_share.conflicting_values}.",
                     evidence_quality=EvidenceQualityRating.INSUFFICIENT,
                     evidence_quality_reasons=["Conflicting obtainable market share evidence."],
+                    calculation_method="bottom_up",
                 )
+            if obt_share.value < 0 or obt_share.value > 100:
+                return SOMResult(
+                    status=CalculationStatus.INVALID_INPUT,
+                    message=f"Invalid percentage: obtainable_market_share must be between 0 and 100 (got {obt_share.value}).",
+                    evidence_quality=EvidenceQualityRating.INSUFFICIENT,
+                    evidence_quality_reasons=["Obtainable market share must be between 0% and 100%."],
+                    calculation_method="bottom_up",
+                )
+
             share_ratio = obt_share.value / 100.0
             share_low = (obt_share.range_min / 100.0) if obt_share.range_min is not None else share_ratio
             share_high = (obt_share.range_max / 100.0) if obt_share.range_max is not None else share_ratio
@@ -1084,6 +1677,9 @@ class CalculationService:
             som_low = sam_low * share_low
             som_high = sam_high * share_high
 
+            if serviceable_count is not None:
+                obtainable_count = serviceable_count * share_ratio
+
             if obt_share.is_assumption:
                 assumptions.append(
                     CalculationAssumption(
@@ -1091,27 +1687,101 @@ class CalculationService:
                         value=obt_share.value,
                         unit=obt_share.unit,
                         justification=obt_share.assumption_justification or "Target SOM market share assumption",
+                        is_user_provided=obt_share.is_user_provided,
                     )
                 )
+                if obt_share.assumption_justification:
+                    capacity_assumptions.append(obt_share.assumption_justification)
 
             steps.append(
                 CalculationStep(
                     step_number=len(steps) + 1,
-                    description=f"Apply obtainable market share: {obt_share.name} ({obt_share.value}%)",
+                    description=f"Apply obtainable market share: {obt_share.name} ({obt_share.value}%) to SAM ({curr_sym}{sam_val:,.0f})",
                     formula=f"SAM × ({obt_share.name} / 100)",
                     operands={"SAM": sam_val, obt_share.name: obt_share.value},
                     result=som_val,
                     result_interval=UncertaintyInterval(lower=som_low, point=som_val, upper=som_high),
-                    unit=sam_result.unit or "USD/year",
+                    unit=sam_result.unit or f"{curr}/year",
                     evidence_references=[obt_share.source_url or obt_share.evidence_id or "SOM Share"],
                     assumptions=[obt_share.name] if obt_share.is_assumption else [],
                 )
             )
 
-        # Funnel Invariant: SOM <= SAM
+        # Invariant enforcement: 0 <= SOM <= SAM
         if sam_result.estimate is not None and som_val > sam_result.estimate:
             som_val = sam_result.estimate
             warnings.append(f"SOM was clamped to not exceed SAM ({sam_result.estimate:,.0f}).")
+        if som_val < 0.0:
+            som_val = 0.0
+
+        steps.append(
+            CalculationStep(
+                step_number=len(steps) + 1,
+                description=f"Validate SOM Invariant: SOM ({som_val:,.0f}) <= SAM ({sam_result.estimate:,.0f})",
+                formula="0 <= SOM <= SAM",
+                operands={"som_value": som_val, "sam_value": sam_result.estimate},
+                result=som_val,
+                unit=sam_result.unit or f"{curr}/year",
+                evidence_references=[],
+                assumptions=[],
+            )
+        )
+
+        # Build Structured Provenance Inputs Dictionary
+        def _build_input_meta(inp: Optional[EvidenceInput], role_title: str) -> Optional[Dict[str, Any]]:
+            if not inp:
+                return None
+            dt = inp.data_type or (DataType.ESTIMATED.value if inp.is_assumption else DataType.SOURCED.value)
+            conf = inp.confidence or (
+                "high" if (dt == DataType.SOURCED.value and inp.source_quality_tier in (SourceQualityTier.TIER_1_GOVERNMENT_OFFICIAL.value, SourceQualityTier.TIER_2_ACADEMIC_TRADE.value))
+                else "medium" if dt == DataType.DERIVED.value
+                else "low"
+            )
+            return {
+                "metric": inp.name or role_title,
+                "value": inp.value,
+                "unit": inp.unit,
+                "currency": inp.currency,
+                "data_type": dt,
+                "source": inp.source_name or inp.source_title or ("User Input" if inp.is_user_provided else "Healthcare Industry Benchmark"),
+                "source_url": inp.source_url,
+                "published_year": inp.published_year or inp.year,
+                "confidence": str(conf).lower(),
+                "notes": inp.assumption_justification or None,
+            }
+
+        obt_inp_meta = _build_input_meta(inputs.realistically_obtainable_customers, "Obtainable Customers")
+        if not obt_inp_meta and inputs.obtainable_market_share:
+            pct_meta = _build_input_meta(inputs.obtainable_market_share, "Obtainable Market Share")
+            obt_inp_meta = {
+                "metric": "Obtainable Customers",
+                "value": obtainable_count,
+                "unit": inputs.potential_customers.unit if inputs.potential_customers else "facilities",
+                "data_type": DataType.DERIVED.value,
+                "source": pct_meta.get("source") if pct_meta else "Derived",
+                "source_url": pct_meta.get("source_url") if pct_meta else None,
+                "published_year": pct_meta.get("published_year") if pct_meta else None,
+                "confidence": pct_meta.get("confidence", "medium") if pct_meta else "medium",
+                "notes": f"Derived via {inputs.obtainable_market_share.value}% obtainable market share assumption",
+            }
+
+        som_inputs: Dict[str, Any] = {
+            "obtainable_customers": obt_inp_meta,
+            "annual_revenue_per_customer": {
+                "metric": "Annual Revenue Per Customer",
+                "value": annual_price,
+                "unit": f"{curr}/customer/year",
+                "currency": curr,
+                "data_type": DataType.DERIVED.value if (is_monthly or is_quarterly or inputs.providers_per_organization or inputs.users_per_organization or inputs.annual_volume_per_customer) else (inputs.pricing.data_type or DataType.SOURCED.value),
+                "source": inputs.pricing.source_name or ("User Input" if inputs.pricing.is_user_provided else "Healthcare SaaS Pricing Benchmark"),
+                "source_url": inputs.pricing.source_url,
+                "published_year": inputs.pricing.published_year or inputs.pricing.year,
+                "confidence": str(inputs.pricing.confidence or "medium").lower(),
+                "notes": inputs.pricing.assumption_justification or (f"Derived from {inputs.pricing.value}/month × 12" if is_monthly else (f"Derived from {inputs.pricing.value}/quarter × 4" if is_quarterly else None)),
+            },
+        }
+        if inputs.obtainable_market_share:
+            som_inputs["obtainable_market_share"] = _build_input_meta(inputs.obtainable_market_share, "Obtainable Market Share")
 
         interval = UncertaintyInterval(lower=som_low, point=som_val, upper=som_high)
         confidence = self._evaluate_confidence(eval_inputs, base_confidence=sam_result.confidence)
@@ -1121,17 +1791,48 @@ class CalculationService:
             CalculationStatus.CALCULATED,
         )
 
+        som_pct_sam = round((som_val / sam_result.estimate) * 100, 2) if (sam_result.estimate and sam_result.estimate > 0) else None
+        
+        if sam_result.sam_percentage_of_tam and som_pct_sam:
+            som_pct_tam = round((sam_result.sam_percentage_of_tam * (som_pct_sam / 100.0)), 2)
+        else:
+            som_pct_tam = None
+
+        has_explicit_range = (
+            (inputs.realistically_obtainable_customers is not None and inputs.realistically_obtainable_customers.range_min is not None and inputs.realistically_obtainable_customers.range_max is not None and inputs.realistically_obtainable_customers.range_min < inputs.realistically_obtainable_customers.range_max)
+            if inputs.realistically_obtainable_customers
+            else (inputs.obtainable_market_share is not None and inputs.obtainable_market_share.range_min is not None and inputs.obtainable_market_share.range_max is not None and inputs.obtainable_market_share.range_min < inputs.obtainable_market_share.range_max)
+            if inputs.obtainable_market_share
+            else False
+        )
+        som_scenarios = {
+            "conservative": round(som_low if has_explicit_range else som_val * 0.5, 2),
+            "base": round(som_val, 2),
+            "optimistic": round(som_high if has_explicit_range else som_val * 1.5, 2),
+        }
+
         return SOMResult(
             status=CalculationStatus.CALCULATED,
             estimate=som_val,
+            display_value=format_market_display_value(som_val, curr),
+            method="bottom_up",
+            formula="obtainable_customers × annual_revenue_per_customer" if has_obtainable_cust else "SAM × (obtainable_market_share / 100)",
+            inputs=som_inputs,
             interval=interval,
             unit=sam_result.unit,
-            currency=sam_result.currency,
+            currency=curr,
             year=sam_result.year,
             geography=sam_result.geography,
             confidence=confidence,
             evidence_quality=eq_rating,
             evidence_quality_reasons=eq_reasons,
+            obtainable_customer_count=obtainable_count,
+            som_percentage_of_sam=som_pct_sam,
+            obtainable_percentage_of_sam=som_pct_sam,
+            obtainable_percentage_of_tam=som_pct_tam,
+            som_scenarios=som_scenarios,
+            calculation_method="bottom_up",
+            capacity_assumptions=capacity_assumptions,
             market_scope="Obtainable market",
             market_scope_explanation="Serviceable Obtainable Market (SOM): Realistic near-term obtainable market share given operational capacity and competitive dynamics.",
             steps=steps,
@@ -2051,12 +2752,32 @@ class CalculationService:
                 formula=formula_str,
                 value=td_sam.estimate,
             )
+        elif bu_sam and bu_sam.status == CalculationStatus.CALCULATED and bu_sam.estimate is not None:
+            bu_inp = request.bottom_up_inputs
+            srv_item = (bu_inp.serviceable_customers or bu_inp.target_customer_percentage) if bu_inp else None
+            sam_trace = SAMTrace(
+                candidate_id=srv_item.evidence_id if srv_item else None,
+                factor=bu_sam.serviceability_factor or (bu_inp.target_customer_percentage.value if bu_inp and bu_inp.target_customer_percentage else None),
+                factor_type="serviceable_population" if (bu_inp and bu_inp.serviceable_customers) else "serviceable_percentage",
+                reason=bu_sam.message or "Serviceable customer population × ARPU",
+                formula=bu_sam.formula,
+                value=bu_sam.estimate,
+            )
         elif td_sam:
             sam_trace = SAMTrace(
                 candidate_id=None,
                 factor=None,
                 factor_type=None,
                 reason=td_sam.message,
+                formula=None,
+                value=None,
+            )
+        elif bu_sam:
+            sam_trace = SAMTrace(
+                candidate_id=None,
+                factor=None,
+                factor_type=None,
+                reason=bu_sam.message,
                 formula=None,
                 value=None,
             )
@@ -2069,11 +2790,27 @@ class CalculationService:
                 reason="Obtainable market share from evidence",
                 value=td_som.estimate,
             )
+        elif bu_som and bu_som.status == CalculationStatus.CALCULATED and bu_som.estimate is not None:
+            bu_inp = request.bottom_up_inputs
+            som_item = (bu_inp.realistically_obtainable_customers or bu_inp.obtainable_market_share) if bu_inp else None
+            som_trace = SOMTrace(
+                candidate_id=som_item.evidence_id if som_item else None,
+                factor=bu_som.obtainable_percentage_of_sam or (som_item.value if som_item else None),
+                reason=bu_som.message or "Obtainable customer capacity × ARPU",
+                value=bu_som.estimate,
+            )
         elif td_som:
             som_trace = SOMTrace(
                 candidate_id=None,
                 factor=None,
                 reason=td_som.message,
+                value=None,
+            )
+        elif bu_som:
+            som_trace = SOMTrace(
+                candidate_id=None,
+                factor=None,
+                reason=bu_som.message,
                 value=None,
             )
         else:
