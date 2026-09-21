@@ -168,6 +168,7 @@ async def test_end_to_end_sam_derived_from_global_tam_and_snippet_percentage():
         value_proposition="Verified veterinarians and groomers",
     )
     pipeline.llm_service.analyze_business_idea = AsyncMock(return_value=mock_biz)
+    pipeline.llm_service.generate_competitors = AsyncMock(return_value=[])
 
     request = PipelineRequest(
         business_idea="Online platform connecting pet owners with verified veterinarians, groomers, and pet-care providers in India",

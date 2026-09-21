@@ -7,11 +7,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.fetching.models import FetchedSource
 from app.schemas.business import (
     BusinessAnalysis,
+    BusinessModelAnalysis,
     CompetitorInfo,
+    CustomerSegmentItem,
     HealthcareCustomerType,
     HealthcarePricingBasis,
     HealthcareSaaSCategory,
     IncompleteInputResponse,
+    MarketAttractivenessAssessment,
+    MarketGrowthItem,
+    MarketTrendItem,
+    ValuePropositionAnalysis,
 )
 from app.schemas.calculation import (
     CalculationAssumption,
@@ -281,6 +287,10 @@ class PipelineRequest(BaseModel):
         default_factory=list,
         description="Optional explicit assumptions.",
     )
+    assumptions: Optional[List[CalculationAssumption]] = Field(
+        default_factory=list,
+        description="Alias for explicit_assumptions.",
+    )
     preferred_geography: Optional[str] = Field(
         default=None,
         description="Target geography alias.",
@@ -488,9 +498,9 @@ class PipelineResult(BaseModel):
         default=None,
         description="Structured deterministic calculation trace for auditing.",
     )
-    market_attractiveness: Optional[HealthcareMarketAttractiveness] = Field(
+    market_attractiveness: Optional[Union[MarketAttractivenessAssessment, HealthcareMarketAttractiveness, Dict[str, Any]]] = Field(
         default=None,
-        description="Overall Healthcare SaaS Market Attractiveness assessment.",
+        description="Overall Market Attractiveness assessment.",
     )
     confidence: str = Field(
         default=EvidenceConfidence.LOW,
@@ -516,13 +526,37 @@ class PipelineResult(BaseModel):
         default_factory=list,
         description="Competitor intelligence identified with source provenance.",
     )
+    competitor_comparison: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Structured competitor comparison matrix.",
+    )
+    market_trends: List[MarketTrendItem] = Field(
+        default_factory=list,
+        description="Dynamic market trends with supporting evidence.",
+    )
+    market_growth: Optional[MarketGrowthItem] = Field(
+        default=None,
+        description="Deterministic or source-reported market CAGR and growth metrics.",
+    )
+    customer_segmentation: List[CustomerSegmentItem] = Field(
+        default_factory=list,
+        description="Customer tier segmentation breakdown.",
+    )
+    value_proposition_analysis: Optional[ValuePropositionAnalysis] = Field(
+        default=None,
+        description="Structured value proposition and differentiator analysis.",
+    )
+    business_model_analysis: Optional[BusinessModelAnalysis] = Field(
+        default=None,
+        description="B2B SaaS monetization and business model breakdown.",
+    )
     conflicts: List[ConflictGroup] = Field(
         default_factory=list,
         description="Conflicting evidence groups detected.",
     )
     final_report_sections: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Structured dictionary containing all 20 required Healthcare SaaS report sections.",
+        description="Structured dictionary containing all 22 required B2B SaaS report sections.",
     )
     errors: List[str] = Field(
         default_factory=list,

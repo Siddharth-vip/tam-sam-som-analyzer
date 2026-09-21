@@ -41,6 +41,8 @@ REJECTED_SOURCE_TOPICS = [
     "apache kafka", "kafka beginner", "kafka tutorial",
     "bird", "birds", "wildlife", "animal species",
     "10 simple tips", "16 best linux", "14 top outstanding",
+    "top 10 best", "10 best tools", "top 20 tools", "7 reasons to", "5 factors driving",
+    "6 factors propelling", "5 trends shaping", "8 challenges in",
 ]
 
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertCircle, RotateCcw, Activity, ShieldCheck, CheckCircle2, TrendingUp, AlertTriangle } from 'lucide-react';
+import { AlertCircle, RotateCcw, Activity, AlertTriangle } from 'lucide-react';
 import { PipelineRequest, PipelineResult, PipelineProgressEvent } from '../types/api';
 import * as apiService from '../services/api';
 import { BusinessIdeaForm } from '../components/BusinessIdeaForm';
@@ -12,6 +12,7 @@ import { AssumptionsPanel } from '../components/AssumptionsPanel';
 import { SourcesPanel } from '../components/SourcesPanel';
 import { CalculationTransparency } from '../components/CalculationTransparency';
 import { CompetitorPanel } from '../components/CompetitorPanel';
+import { MarketInsightsPanel } from '../components/MarketInsightsPanel';
 import { RisksPanel } from '../components/RisksPanel';
 import { ReportPanel } from '../components/ReportPanel';
 
@@ -29,7 +30,7 @@ export const MarketAnalysisPage: React.FC = () => {
       pipeline_id: 'pending',
       stage: 'received',
       status: 'running',
-      message: 'Analyzing Healthcare SaaS requirements and querying market intelligence...',
+      message: 'Analyzing business idea requirements and querying market intelligence...',
       progress_percent: 10,
       timestamp: new Date().toISOString(),
     });
@@ -40,9 +41,9 @@ export const MarketAnalysisPage: React.FC = () => {
       const data = await apiService.analyzeMarket(request);
       
       // Check if backend returned INCOMPLETE_INPUT
-      if (data.status === 'INCOMPLETE_INPUT' || (data.missing_fields && data.missing_fields.length > 0)) {
+      if (String(data.status).toUpperCase() === 'INCOMPLETE_INPUT' || (data.missing_fields && data.missing_fields.length > 0)) {
         setMissingFields(data.missing_fields || []);
-        setErrorMessage(data.errors?.[0] || 'Additional Healthcare SaaS parameters are required to perform accurate market sizing.');
+        setErrorMessage(data.errors?.[0] || 'Additional parameters are required to perform accurate market sizing.');
         setResult(null);
         setCurrentEvent(null);
         return;
@@ -235,7 +236,7 @@ export const MarketAnalysisPage: React.FC = () => {
                 </div>
                 <div style={{ flex: 1, minWidth: '260px' }}>
                   <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                    {attractiveness.explanation}
+                    {attractiveness.explanation || attractiveness.rationale || 'Market attractiveness calculated from competitive, growth, and market sizing indicators.'}
                   </p>
                 </div>
               </div>
@@ -284,8 +285,21 @@ export const MarketAnalysisPage: React.FC = () => {
             researchProvider={result.research_provider}
           />
 
-          {/* Competitive Landscape */}
-          <CompetitorPanel competitors={result.competitors} />
+          {/* Competitive Landscape & Matrix */}
+          <CompetitorPanel
+            competitors={result.competitors}
+            competitorComparison={result.competitor_comparison}
+          />
+
+          {/* Deep Market Insights (Trends, Growth, Segmentation, Value Prop, Business Model) */}
+          <MarketInsightsPanel
+            trends={result.market_trends}
+            growth={result.market_growth}
+            segmentation={result.customer_segmentation}
+            valueProp={result.value_proposition_analysis}
+            businessModel={result.business_model_analysis}
+            attractiveness={result.market_attractiveness}
+          />
 
           {/* Risks & Warnings */}
           <RisksPanel

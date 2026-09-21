@@ -155,6 +155,10 @@ class EvidenceValidationService:
         "framework", "frameworks", "library", "libraries", "package", "packages",
         "article", "articles", "post", "posts", "lesson", "lessons", "step", "steps",
         "reason", "reasons", "idea", "ideas", "thing", "things", "hack", "hacks",
+        "factor", "factors", "driver", "drivers", "pillar", "pillars", "trend", "trends",
+        "challenge", "challenges", "prediction", "predictions", "stat", "stats", "statistic", "statistics",
+        "takeaway", "takeaways", "point", "points", "way", "ways", "benefit", "benefits",
+        "finding", "findings", "strategy", "strategies", "ranking", "rankings", "list", "lists", "overview",
     }
 
     # Non-negative metrics whitelist concepts

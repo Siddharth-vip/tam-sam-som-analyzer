@@ -2976,3 +2976,34 @@ def get_calculation_service() -> CalculationService:
         _calculation_service_instance = CalculationService()
     return _calculation_service_instance
 
+
+def calculate_deterministic_cagr(
+    beginning_value: float,
+    ending_value: float,
+    years: float,
+) -> Optional[float]:
+    """Calculate deterministic Compound Annual Growth Rate (CAGR).
+
+    Formula:
+        CAGR = ((Ending Value / Beginning Value) ** (1 / Number of Years)) - 1
+
+    Invariants:
+        - beginning_value > 0
+        - ending_value >= 0
+        - years > 0
+    Returns decimal float (e.g. 0.165 for 16.5%) or None if invalid.
+    """
+    if beginning_value is None or ending_value is None or years is None:
+        return None
+    try:
+        beg = float(beginning_value)
+        end = float(ending_value)
+        yr = float(years)
+        if beg <= 0 or end < 0 or yr <= 0:
+            return None
+        cagr = ((end / beg) ** (1.0 / yr)) - 1.0
+        return round(cagr, 4)
+    except (ZeroDivisionError, OverflowError, ValueError, TypeError):
+        return None
+
+

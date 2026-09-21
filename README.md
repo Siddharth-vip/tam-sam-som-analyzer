@@ -97,14 +97,13 @@ tam-sam-som-analyzer/
 │   │   ├── calculation.py       # Deterministic TAM/SAM/SOM API
 │   │   ├── evidence.py          # Discovery, fetch & validation API
 │   │   ├── orchestration.py     # Orchestrator API
-│   │   └── pipeline.py          # Main pipeline execution & SSE streaming
 │   ├── discovery/               # Discovery providers (mock & live)
-│   ├── engines/                 # Calculation engine implementation
 │   ├── fetching/                # SSRF-guarded HTTP fetcher & HTML sanitizer
 │   ├── orchestration/           # 9-stage pipeline coordinator & SSE events
 │   ├── schemas/                 # Pydantic models & validation schemas
-│   ├── services/                # Business logic services
+│   ├── services/                # Authoritative calculation, LLM, extraction & validation services
 │   ├── storage/                 # SQLite persistence & audit repository
+│   ├── taxonomy/                # Canonical 25 B2B SaaS taxonomy & 120+ subcategories
 │   ├── config.py                # Environment-based application settings
 │   └── main.py                  # FastAPI application entrypoint & middleware
 ├── data/                        # SQLite storage directory

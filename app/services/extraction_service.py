@@ -114,7 +114,7 @@ RECOGNIZED_MARKET_ENTITIES = {
     "worker", "workers", "employee", "employees", "adult", "adults", "youth",
     "child", "children", "teen", "teens", "teenager", "teenagers",
     "patient", "patients", "citizen", "citizens", "consumer", "consumers",
-    "driver", "drivers", "graduate", "graduates", "teacher", "teachers",
+    "graduate", "graduates", "teacher", "teachers",
     "educator", "educators", "instructor", "instructors", "tutor", "tutors",
     "reader", "readers", "member", "members", "client", "clients", "account", "accounts",
     "creator", "creators", "freelancer", "freelancers", "founder", "founders",
@@ -156,17 +156,20 @@ RECOGNIZED_MARKET_ENTITIES = {
 
 # Strict blacklist of listicle headings, tech specs, versions, time units, and non-market noise
 NOISE_REJECTION_TERMS = {
-    # Listicle & Article Noise
+    # Listicle & Article Noise (Generic & Category-Agnostic)
     "tip", "tips", "trick", "tricks", "way", "ways", "reason", "reasons",
+    "factor", "factors", "driver", "drivers", "pillar", "pillars", "trend", "trends",
+    "challenge", "challenges", "prediction", "predictions", "stat", "stats", "statistic", "statistics",
+    "lesson", "lessons", "takeaway", "takeaways", "point", "points", "insight", "insights",
     "step", "steps", "idea", "ideas", "example", "examples", "thing", "things",
     "tool", "tools", "feature", "features", "item", "items", "plugin", "plugins",
     "distribution", "distributions", "distro", "distros", "framework", "frameworks",
     "library", "libraries", "package", "packages", "model", "models", "llm", "llms",
     "article", "articles", "post", "posts", "question", "questions", "faq", "faqs",
     "rule", "rules", "habit", "habits", "fact", "facts", "myth", "myths",
-    "benefit", "benefits", "trend", "trends", "alternative", "alternatives",
+    "benefit", "benefits", "alternative", "alternatives", "finding", "findings",
     "option", "options", "method", "methods", "technique", "techniques",
-    "strategy", "strategies", "lesson", "lessons", "ranking", "rankings",
+    "strategy", "strategies", "ranking", "rankings", "list", "lists", "overview",
     "hack", "hacks", "shortcut", "shortcuts", "secret", "secrets",
 
     # Software Versions & Hardware/Tech Specifications
@@ -193,7 +196,7 @@ NOISE_REJECTION_TERMS = {
 
 # Regex identifying listicle headers and publication dates
 LISTICLE_PATTERN = re.compile(
-    r"^(?:top\s+\d+|\d+\s+(?:best|top|simple|easy|essential|great|outstanding|tips|ways|tricks|steps|rules|reasons|distros|distributions|llms|tools|plugins|frameworks|libraries))\b",
+    r"^(?:top\s+\d+|\d+\s+(?:best|top|simple|easy|essential|great|outstanding|tips|ways|tricks|steps|rules|reasons|factors|drivers|challenges|trends|benefits|strategies|examples|predictions|pillars|myths|lessons|insights|takeaways|stats|statistics|points|distros|distributions|llms|tools|plugins|frameworks|libraries))\b",
     re.IGNORECASE,
 )
 
@@ -234,34 +237,28 @@ class EvidenceExtractionService:
             return MarketMetricType.COMPANY_REVENUE
 
         # Pricing & ARPU & Unit Economics
-        UNIT_ECONOMICS_TERMS = (
-            "price", "pricing", "arpu", "subscription", "fee", "cost per", "rate", "/month", "/year",
-            "annual fee", "expenditure", "spend per", "spending per", "per pet", "per companion pet",
+        EXPLICIT_UNIT_PRICING_TERMS = (
+            "price per", "cost per", "fee per", "spending per", "spend per", "arpu",
             "per user", "per student", "per capita", "per head", "per household", "per animal", "per dog", "per cat",
             "per person", "per subscriber", "per learner", "per client", "per account", "per employee",
             "per transaction", "per order", "per delivery", "per meal", "per ride", "per lesson", "per session",
-            "per consultation", "per item", "per garment", "per piece", "order value", "average order value",
-            "aov", "unit price", "annual spend", "annual expenditure", "spend", "cost", "charge",
-            "tuition", "fare", "ticket"
+            "per consultation", "per item", "per garment", "per piece", "per provider", "per facility", "per seat",
+            "/month", "/year", "/mo", "/yr", "subscription price", "annual plan", "monthly plan", "order value",
+            "average order value", "aov", "unit price", "annual spend per", "annual expenditure per", "tuition", "fare", "ticket"
         )
         is_currency_unit = any(curr in u_lower for curr in ("usd", "inr", "eur", "gbp", "dollar", "rupee", "$", "₹", "€", "£"))
         has_macro_mult = multiplier and multiplier.lower() in ("million", "billion", "crore", "lakh", "trillion", "mn", "bn", "cr", "t", "m", "b")
         is_large_val = (value is not None and value >= 1_000_000.0) or has_macro_mult
 
         if is_currency_unit:
-            if any(p in m_lower or p in ctx_lower for p in UNIT_ECONOMICS_TERMS) or not is_large_val:
+            if not is_large_val:
                 if any(s in m_lower or s in ctx_lower for s in ("subscription", "monthly", "annual plan", "plan", "/mo", "/month")):
                     return MarketMetricType.SUBSCRIPTION_PRICE
                 return MarketMetricType.AVERAGE_PRICE
-
-        # Market Size / Revenue (only if genuine macro market terms are present AND scale is large)
-        MACRO_MARKET_TERMS = (
-            "market size", "market revenue", "market value", "market spending", "total market",
-            "overall market", "industry size", "industry revenue", "sector revenue", "market reached",
-            "market was valued", "market is valued", "market valuation", "market worth"
-        )
-        if is_currency_unit and is_large_val:
-            if any(mm in m_lower or mm in ctx_lower for mm in MACRO_MARKET_TERMS) or not any(p in m_lower or p in ctx_lower for p in UNIT_ECONOMICS_TERMS):
+            else:
+                # Large scale currency value (>= 1M or macro multiplier)
+                if any(p in m_lower or p in ctx_lower for p in EXPLICIT_UNIT_PRICING_TERMS):
+                    return MarketMetricType.AVERAGE_PRICE
                 return MarketMetricType.MARKET_SIZE
 
         # Market Share / Growth Rate / CAGR
@@ -566,11 +563,13 @@ class EvidenceExtractionService:
         # 2. Approximate Pattern: e.g. "more than 10 million users", "approximately 500,000 college students"
         for approx_prefix in APPROX_QUALIFIERS:
             approx_regex = rf"\b({re.escape(approx_prefix)}\s+([0-9]+(?:,[0-9]+)*(?:\.[0-9]+)?)\s*(thousand|million|billion|trillion|crore|lakh|mn|bn|k|b|m)?\s+([a-zA-Z%]+(?:\s+[a-zA-Z%]+){{0,4}})?)\b"
-            approx_match = re.search(approx_regex, cleaned_sentence, re.IGNORECASE)
-            if approx_match and not spans_overlap(approx_match.start(), approx_match.end()):
-                raw_expr = approx_match.group(1).strip()
+            for approx_match in re.finditer(approx_regex, cleaned_sentence, re.IGNORECASE):
+                raw_match_text = approx_match.group(1).strip()
                 num_str = approx_match.group(2)
                 multiplier = approx_match.group(3)
+                approx_start = approx_match.start()
+                if spans_overlap(approx_start, approx_start + len(num_str)):
+                    continue
                 raw_trailing_words = (approx_match.group(4) or "").split()
                 cand_geo = self.extract_geography_for_match(cleaned_sentence, approx_match.start(), approx_match.end())
                 cand_year = self.extract_year_for_match(cleaned_sentence, approx_match.start(), approx_match.end())
@@ -580,27 +579,40 @@ class EvidenceExtractionService:
                     "is", "are", "was", "were", "and", "or", "as", "during", "of", "who",
                     "which", "that", "over", "between",
                 }
-                trailing_verbs = {"enrolled", "registered", "operating", "living", "located", "based", "working"}
+                trailing_verbs = {
+                    "enrolled", "registered", "operating", "living", "located", "based", "working",
+                    "employing", "utilizing", "using", "deploying", "adopting", "subscribing",
+                    "managing", "serving", "generating", "producing", "graduating", "spanning",
+                    "deploy", "use", "utilize", "adopt", "subscribe", "operate", "live", "work", "employ",
+                    "globally", "worldwide", "nationwide", "currently", "annually",
+                }
 
                 noun_words = []
                 for word in raw_trailing_words:
-                    w_lower = word.lower()
+                    w_lower = word.lower().strip(",.")
                     if w_lower in stop_words:
                         break
                     if w_lower in trailing_verbs and len(noun_words) > 0:
                         break
+                    if w_lower in NOISE_REJECTION_TERMS:
+                        noun_words = []
+                        break
                     noun_words.append(word)
+                    if len(noun_words) > 0 and self.is_recognized_market_entity(w_lower) and len(noun_words) >= 2:
+                        break
 
                 if noun_words:
                     unit_word = noun_words[-1].lower()
-                    if not any(w.lower() in NOISE_REJECTION_TERMS for w in noun_words) and (self.is_recognized_market_entity(unit_word) or any(curr in raw_expr for curr in ("USD", "$", "INR", "₹"))):
+                    if not any(w.lower() in NOISE_REJECTION_TERMS for w in noun_words) and (self.is_recognized_market_entity(unit_word) or any(curr in raw_match_text for curr in ("USD", "$", "INR", "₹"))):
                         subject_noun = " ".join(noun_words)
+                        mult_part = f" {multiplier}" if multiplier else ""
+                        exact_raw_expr = f"{approx_prefix} {num_str}{mult_part} {subject_noun}".strip()
                         try:
                             base_val = self.parse_number_with_multiplier(num_str, multiplier)
                             unit = noun_words[-1]
-                            if any(curr in raw_expr for curr in ("USD", "$")):
+                            if any(curr in raw_match_text for curr in ("USD", "$")):
                                 unit = "USD"
-                            elif any(curr in raw_expr for curr in ("INR", "₹")):
+                            elif any(curr in raw_match_text for curr in ("INR", "₹")):
                                 unit = "INR"
 
                             m_type = self.classify_market_metric_type(metric=subject_noun, unit=unit, context=cleaned_sentence)
@@ -610,8 +622,8 @@ class EvidenceExtractionService:
                                 ExtractedEvidenceCandidate(
                                     metric=subject_noun,
                                     metric_type=m_type,
-                                    value=base_val,
-                                    raw_value_expression=raw_expr,
+                                    value=None,
+                                    raw_value_expression=exact_raw_expr,
                                     unit=unit,
                                     geography=cand_geo,
                                     year=cand_year,
@@ -627,8 +639,7 @@ class EvidenceExtractionService:
                                     notes=f"Approximate expression with qualifier '{approx_prefix}' (baseline {base_val})",
                                 )
                             )
-                            extracted_spans.append((approx_match.start(), approx_match.end()))
-                            break
+                            extracted_spans.append((approx_start, approx_start + len(exact_raw_expr)))
                         except Exception:
                             pass
 
@@ -717,53 +728,80 @@ class EvidenceExtractionService:
             cleaned_sentence,
             re.IGNORECASE,
         ):
-            # Guard against currency symbols immediately preceding count match (e.g. "$29.5 per customer")
             match_start = count_match.start()
-            prefix_char = cleaned_sentence[match_start - 1] if match_start > 0 else ""
-            if prefix_char in ("$", "₹", "€", "£") or spans_overlap(count_match.start(), count_match.end()):
-                continue
-
             num_str = count_match.group(1)
             multiplier = count_match.group(2)
+            prefix_char = cleaned_sentence[match_start - 1] if match_start > 0 else ""
+            if prefix_char in ("$", "₹", "€", "£") or spans_overlap(match_start, match_start + len(num_str)):
+                continue
+
             raw_trailing_words = count_match.group(3).split()
             cand_geo = self.extract_geography_for_match(cleaned_sentence, count_match.start(), count_match.end())
             cand_year = self.extract_year_for_match(cleaned_sentence, count_match.start(), count_match.end())
 
             # Guard: Standalone calendar year (e.g. "2024 college students graduated") check
             if not (multiplier is None and re.match(r"^(19\d\d|20[0-3]\d)$", num_str.replace(",", ""))):
+                # Reject match if immediate trailing token is a known listicle/noise keyword (e.g., "6 Factors Propelling...", "10 Best CRM...")
+                if raw_trailing_words and raw_trailing_words[0].lower().strip(",.") in NOISE_REJECTION_TERMS:
+                    continue
+
                 stop_words = {
                     "in", "on", "at", "by", "for", "from", "with", "to", "across",
                     "is", "are", "was", "were", "and", "or", "as", "during", "of", "who",
                     "which", "that", "over", "between",
                 }
-                trailing_verbs = {"enrolled", "registered", "operating", "living", "located", "based", "working"}
+                trailing_verbs = {
+                    "enrolled", "registered", "operating", "living", "located", "based", "working",
+                    "employing", "utilizing", "using", "deploying", "adopting", "subscribing",
+                    "managing", "serving", "generating", "producing", "graduating", "spanning",
+                    "deploy", "use", "utilize", "adopt", "subscribe", "operate", "live", "work", "employ",
+                    "globally", "worldwide", "nationwide", "currently", "annually",
+                }
 
                 noun_words = []
                 for word in raw_trailing_words:
-                    w_lower = word.lower()
+                    w_lower = word.lower().strip(",.")
                     if w_lower in stop_words:
                         break
                     if w_lower in trailing_verbs and len(noun_words) > 0:
                         break
+                    if w_lower in NOISE_REJECTION_TERMS:
+                        noun_words = []
+                        break
                     noun_words.append(word)
+                    if len(noun_words) > 0 and self.is_recognized_market_entity(w_lower) and len(noun_words) >= 2:
+                        break
 
                 if noun_words:
-                    unit_word = noun_words[-1].lower()
-                    if not any(w.lower() in NOISE_REJECTION_TERMS for w in noun_words) and self.is_recognized_market_entity(unit_word):
+                    unit_word = noun_words[-1].lower().strip(",.")
+                    if not any(w.lower().strip(",.") in NOISE_REJECTION_TERMS for w in noun_words) and self.is_recognized_market_entity(unit_word):
                         subject_noun = " ".join(noun_words)
                         mult_part = f" {multiplier}" if multiplier else ""
                         raw_expr = f"{num_str}{mult_part} {subject_noun}"
 
                         try:
                             resolved_val = self.parse_number_with_multiplier(num_str, multiplier)
-                            m_type = self.classify_market_metric_type(metric=subject_noun, unit=noun_words[-1], context=cleaned_sentence)
+                            m_type = self.classify_market_metric_type(metric=subject_noun, unit=unit_word, context=cleaned_sentence)
+
+                            # Guard against small isolated integers (<50 without multiplier) falsely becoming macro population/customer count
+                            if multiplier is None and resolved_val < 50 and m_type in (
+                                MarketMetricType.POPULATION,
+                                MarketMetricType.CUSTOMER_COUNT,
+                                MarketMetricType.USERS,
+                                MarketMetricType.STUDENT_COUNT,
+                                MarketMetricType.HOUSEHOLDS,
+                            ):
+                                is_explicit_survey = any(s in cleaned_sentence.lower() for s in ("survey of", "sample of", "cohort of", "interviewed", "respondents", "participating"))
+                                if not is_explicit_survey:
+                                    continue
+
                             candidates.append(
                                 ExtractedEvidenceCandidate(
                                     metric=subject_noun,
                                     metric_type=m_type,
                                     value=resolved_val,
                                     raw_value_expression=raw_expr,
-                                    unit=noun_words[-1],
+                                    unit=unit_word,
                                     geography=cand_geo,
                                     year=cand_year,
                                     is_range_or_approximate=False,
@@ -775,7 +813,7 @@ class EvidenceExtractionService:
                                     lifecycle_stage=DiscoveryLifecycleStage.EXTRACTED,
                                 )
                             )
-                            extracted_spans.append((count_match.start(), count_match.end()))
+                            extracted_spans.append((match_start, match_start + len(raw_expr)))
                         except Exception:
                             pass
 

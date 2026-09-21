@@ -165,7 +165,7 @@ export const MethodComparison: React.FC<Props> = ({ comparison, currency = 'INR'
             Divergence Diagnostic Root Causes:
           </strong>
           <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
-            {comparison.root_cause_diagnostics.map((diag, i) => (
+            {comparison.root_cause_diagnostics.map((diag: string, i: number) => (
               <li key={i} style={{ marginBottom: '0.2rem' }}>
                 {diag}
               </li>

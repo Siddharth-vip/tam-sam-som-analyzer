@@ -323,6 +323,11 @@ class MetricCalculationResult(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="Validation warnings or caveats.")
     message: Optional[str] = Field(default=None, description="Status summary or refusal reason.")
 
+    @property
+    def value(self) -> Optional[float]:
+        """Backwards compatible alias for estimate."""
+        return self.estimate
+
     @model_validator(mode="after")
     def validate_estimate_and_status(self) -> "MetricCalculationResult":
         # Automatically generate display value if estimate is present and display_value is unset
